@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardList,
-  Clock3, Download, FileDown, History, KeyRound, Lock, Moon, PencilLine, Plus,
-  Settings, ShieldCheck, Sun, Trash2, Unlock, User, UserPlus, Wifi, X,
+  Clock3, Cloud, CloudOff, Copy, Database, Download, FileDown, History, KeyRound,
+  Lock, Moon, PencilLine, Plus, RefreshCw, Settings, ShieldCheck, Sun, Trash2,
+  Unlock, User, UserPlus, Wifi, X,
 } from 'lucide-react';
-import { supabase } from './supabaseClient';
+import {
+  probeCloud, SETUP_SQL, subscribeCloud, writeCloud, type CloudPath, type CloudStatus,
+} from './lib/cloud';
 
 // ----- Default lists. Edit here; admin edits override and sync to the team. -----
 const DEFAULT_CHECKLISTS = {
@@ -61,6 +64,7 @@ type TeamUser = { id: string; name: string; added: string };
 
 function formatKey(d: Date) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 function parseKey(k: string) { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); }
+function isWithinHistory(k: string) { const t = new Date(); t.setHours(0, 0, 0, 0); const days = Math.floor((t.getTime() - parseKey(k).getTime()) / 86400000); return days >= 0 && days < 14; }
 function emptyDay(date: string): DayRecord { return { date, opening: {}, closing: {} }; }
 function prettyTime(iso: string) { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 function asUsers(v: unknown): TeamUser[] | null {
@@ -69,16 +73,23 @@ function asUsers(v: unknown): TeamUser[] | null {
   return ok.length ? ok : null;
 }
 
-async function loadState<T>(key: string): Promise<{ value: T | null; errored: boolean }> {
-  const { data, error } = await supabase.from('app_state').select('value').eq('key', key).maybeSingle();
-  if (error) {
-    console.error(`[app_state] failed to load "${key}":`, error.message);
-    return { value: null, errored: true };
+async function sharedGet(key: string): Promise<unknown> {
+  // @ts-expect-error shared artifact storage injected by host
+  if (typeof window !== 'undefined' && window.storage?.get) {
+    try { // @ts-expect-error shared artifact storage injected by host
+      return (await window.storage.get(key, { shared: true })) ?? null;
+    } catch { /* preview fallback */ }
   }
-  return { value: (data?.value as T) ?? null, errored: false };
+  try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : null; } catch { return null; }
 }
-async function saveState(key: string, value: unknown) {
-  await supabase.from('app_state').upsert({ key, value, updated_at: new Date().toISOString() });
+async function sharedSet(key: string, value: unknown) {
+  // @ts-expect-error shared artifact storage injected by host
+  if (typeof window !== 'undefined' && window.storage?.set) {
+    try { // @ts-expect-error shared artifact storage injected by host
+      await window.storage.set(key, value, { shared: true }); return;
+    } catch { /* preview fallback */ }
+  }
+  window.localStorage.setItem(key, JSON.stringify(value));
 }
 function asChecklistConfig(v: unknown): ChecklistConfig | null {
   if (!v || typeof v !== 'object') return null;
@@ -91,12 +102,39 @@ function asChecklistConfig(v: unknown): ChecklistConfig | null {
 const TAGLINES = ['Open strong.', 'Close clean.', 'Sign every step.'];
 
 export default function App() {
-  const [records, setRecords] = useState<Records>({});
-  const [checklists, setChecklists] = useState<ChecklistConfig>({ opening: [...DEFAULT_CHECKLISTS.opening], closing: [...DEFAULT_CHECKLISTS.closing] });
-  const [users, setUsers] = useState<TeamUser[]>(DEFAULT_USERS);
-  const [adminCode, setAdminCode] = useState(DEFAULT_CODE);
+  const [records, setRecords] = useState<Records>(() => {
+    try {
+      const raw = window.localStorage.getItem(RECORDS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Records;
+      const safe: Records = {};
+      Object.entries(parsed).forEach(([d, r]) => { if (isWithinHistory(d)) safe[d] = r; });
+      return safe;
+    } catch { return {}; }
+  });
+
+  const [checklists, setChecklists] = useState<ChecklistConfig>(() => {
+    try {
+      const raw = window.localStorage.getItem(CHECKLISTS_KEY);
+      const cfg = asChecklistConfig(raw ? JSON.parse(raw) : null);
+      return cfg || { opening: [...DEFAULT_CHECKLISTS.opening], closing: [...DEFAULT_CHECKLISTS.closing] };
+    } catch { return { opening: [...DEFAULT_CHECKLISTS.opening], closing: [...DEFAULT_CHECKLISTS.closing] }; }
+  });
+
+  const [users, setUsers] = useState<TeamUser[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(USERS_KEY);
+      const u = asUsers(raw ? JSON.parse(raw) : null);
+      return u || DEFAULT_USERS;
+    } catch { return DEFAULT_USERS; }
+  });
+
+  const [adminCode, setAdminCode] = useState(() => {
+    try { return window.localStorage.getItem(CODE_KEY) || DEFAULT_CODE; } catch { return DEFAULT_CODE; }
+  });
+
   const [view, setView] = useState<View>('home');
-  const [staffName, setStaffName] = useState('');
+  const [staffName, setStaffName] = useState(() => window.localStorage.getItem('daily_current_staff') || '');
   const [nameOpen, setNameOpen] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [tagIndex, setTagIndex] = useState(0);
@@ -107,18 +145,20 @@ export default function App() {
   const [adminPane, setAdminPane] = useState<AdminPane>('studio');
   const [editorShift, setEditorShift] = useState<Shift>('opening');
   const [selectedDate, setSelectedDate] = useState(formatKey(new Date()));
-  const [clearBeforeDate, setClearBeforeDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 13); return formatKey(d); });
   const [exportFrom, setExportFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 13); return formatKey(d); });
   const [exportTo, setExportTo] = useState(() => formatKey(new Date()));
   const [newUserName, setNewUserName] = useState('');
   const [newCode, setNewCode] = useState('');
   const [confirmCode, setConfirmCode] = useState('');
   const [codeMsg, setCodeMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<'checking' | 'off' | CloudStatus>('checking');
   const [toast, setToast] = useState('');
   const [justChecked, setJustChecked] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const saveTimer = useRef<number | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
+  const cloudUnsub = useRef<() => void>(() => undefined);
+  const migratedRef = useRef(false);
 
   const todayKey = formatKey(new Date());
   const todayRecord = records[todayKey] || emptyDay(todayKey);
@@ -128,49 +168,45 @@ export default function App() {
   useEffect(() => {
     const load = async () => {
       const [recs, cfg, storedUsers, storedCode] = await Promise.all([
-        loadState<Records>(RECORDS_KEY), loadState<ChecklistConfig>(CHECKLISTS_KEY),
-        loadState<TeamUser[]>(USERS_KEY), loadState<string>(CODE_KEY),
+        sharedGet(RECORDS_KEY), sharedGet(CHECKLISTS_KEY), sharedGet(USERS_KEY), sharedGet(CODE_KEY),
       ]);
-      if (recs.value && typeof recs.value === 'object') setRecords(recs.value);
-
-      const config = asChecklistConfig(cfg.value);
+      if (recs && typeof recs === 'object') {
+        const safe: Records = {};
+        Object.entries(recs as Records).forEach(([d, r]) => { if (isWithinHistory(d)) safe[d] = r; });
+        setRecords(safe);
+        if (Object.keys(safe).length !== Object.keys(recs as Records).length) await sharedSet(RECORDS_KEY, safe);
+      }
+      const config = asChecklistConfig(cfg);
       if (config) setChecklists(config);
-      else if (!cfg.errored) await saveState(CHECKLISTS_KEY, DEFAULT_CHECKLISTS);
-      // if cfg.errored, keep the in-memory default for this session but DON'T touch the database
-
-      const u = asUsers(storedUsers.value);
+      const u = asUsers(storedUsers);
       if (u) setUsers(u);
-      else if (!storedUsers.errored) await saveState(USERS_KEY, DEFAULT_USERS);
-
-      if (typeof storedCode.value === 'string' && storedCode.value.trim()) setAdminCode(storedCode.value.trim());
-      else if (!storedCode.errored) await saveState(CODE_KEY, DEFAULT_CODE);
+      else await sharedSet(USERS_KEY, DEFAULT_USERS);
+      if (typeof storedCode === 'string' && storedCode.trim()) setAdminCode(storedCode.trim());
       const saved = window.localStorage.getItem('daily_current_staff');
       if (saved) setStaffName(saved);
+      const status = await probeCloud();
+      if (status === 'connected') { setCloudStatus('connected'); attachCloud(); }
+      else setCloudStatus(status);
       setLoading(false);
     };
     void load();
-
-    // Real-time sync: every device gets pushed changes instantly, no polling.
-    const channel = supabase
-      .channel('app_state_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_state' }, (payload) => {
-        const row = payload.new as { key?: string; value?: unknown } | undefined;
-        if (!row?.key) return;
-        if (row.key === RECORDS_KEY && row.value && typeof row.value === 'object') {
-          setRecords(cur => (JSON.stringify(cur) === JSON.stringify(row.value) ? cur : row.value as Records));
-        } else if (row.key === CHECKLISTS_KEY) {
-          const config = asChecklistConfig(row.value);
-          if (config) setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(config) ? cur : config));
-        } else if (row.key === USERS_KEY) {
-          const u = asUsers(row.value);
-          if (u) setUsers(cur => (JSON.stringify(cur) === JSON.stringify(u) ? cur : u));
-        } else if (row.key === CODE_KEY && typeof row.value === 'string') {
-          setAdminCode(c => (c === row.value ? c : (row.value as string)));
-        }
-      })
-      .subscribe();
-
-    return () => { void supabase.removeChannel(channel); };
+    const tick = window.setInterval(async () => {
+      const [nr, nc, nu, ncode] = await Promise.all([
+        sharedGet(RECORDS_KEY), sharedGet(CHECKLISTS_KEY), sharedGet(USERS_KEY), sharedGet(CODE_KEY),
+      ]);
+      if (nr && typeof nr === 'object') {
+        const pruned: Records = {};
+        Object.entries(nr as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
+        setRecords(cur => JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned);
+      }
+      const config = asChecklistConfig(nc);
+      if (config) setChecklists(cur => JSON.stringify(cur) === JSON.stringify(config) ? cur : config);
+      const u = asUsers(nu);
+      if (u) setUsers(cur => JSON.stringify(cur) === JSON.stringify(u) ? cur : u);
+      if (typeof ncode === 'string' && ncode.trim()) setAdminCode(c => (c === ncode.trim() ? c : ncode.trim()));
+    }, 4000);
+    return () => { window.clearInterval(tick); cloudUnsub.current(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { if (staffName.trim()) window.localStorage.setItem('daily_current_staff', staffName.trim()); }, [staffName]);
@@ -193,14 +229,56 @@ export default function App() {
   const selectedActivity = useMemo(() => activityFor(selectedRecord), [selectedRecord, lookup]);
 
   const showToast = (m: string) => { setToast(m); window.setTimeout(() => setToast(''), 2600); };
-  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => void saveState(RECORDS_KEY, next), 250); };
-  const persistUsers = (next: TeamUser[]) => { setUsers(next); void saveState(USERS_KEY, next); };
-  const clearRecordsBefore = (dateKey: string) => {
-    if (!window.confirm(`Permanently delete all saved records before ${dateKey}? This cannot be undone.`)) return;
-    const next: Records = {};
-    Object.entries(records).forEach(([d, r]) => { if (d >= dateKey) next[d] = r; });
-    persist(next);
-    showToast('Old records cleared.');
+
+  const cloudOn = cloudStatus === 'connected';
+  const CLOUD_PATHS: Record<string, CloudPath> = { [RECORDS_KEY]: 'records', [CHECKLISTS_KEY]: 'checklists', [USERS_KEY]: 'users', [CODE_KEY]: 'adminCode' };
+  // Writes go to the local browser AND, when connected, to the shared cloud database.
+  const save = (key: string, value: unknown) => { void sharedSet(key, value); if (cloudOn) writeCloud(CLOUD_PATHS[key], value); };
+  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => save(RECORDS_KEY, next), 250); };
+  const persistUsers = (next: TeamUser[]) => { setUsers(next); save(USERS_KEY, next); };
+
+  const attachCloud = () => {
+    cloudUnsub.current();
+    migratedRef.current = false;
+    cloudUnsub.current = subscribeCloud(data => {
+      const seed = (key: string, cloudVal: unknown) => {
+        // First sync: if the cloud is empty for this key, push the local copy up so nothing is lost.
+        if (cloudVal == null && !migratedRef.current) {
+          try { const raw = window.localStorage.getItem(key); if (raw) writeCloud(CLOUD_PATHS[key], JSON.parse(raw)); } catch { /* ignore */ }
+        }
+      };
+      if (data.records && typeof data.records === 'object') {
+        const pruned: Records = {};
+        Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
+        window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
+        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
+      } else seed(RECORDS_KEY, data.records);
+      const cfg = asChecklistConfig(data.checklists);
+      if (cfg) { window.localStorage.setItem(CHECKLISTS_KEY, JSON.stringify(cfg)); setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(cfg) ? cur : cfg)); }
+      else seed(CHECKLISTS_KEY, data.checklists);
+      const us = asUsers(data.users);
+      if (us) { window.localStorage.setItem(USERS_KEY, JSON.stringify(us)); setUsers(cur => (JSON.stringify(cur) === JSON.stringify(us) ? cur : us)); }
+      else seed(USERS_KEY, data.users);
+      if (typeof data.adminCode === 'string' && data.adminCode.trim()) setAdminCode(data.adminCode.trim());
+      else seed(CODE_KEY, data.adminCode);
+      migratedRef.current = true;
+    });
+  };
+
+  const retryCloud = async () => {
+    setCloudStatus('checking');
+    const status = await probeCloud();
+    if (status === 'connected') { setCloudStatus('connected'); attachCloud(); showToast('Cloud sync connected.'); }
+    else { setCloudStatus(status); if (status === 'needs-setup') showToast('Table not found — run the SQL once in Supabase.'); }
+  };
+  const goLocal = () => {
+    cloudUnsub.current();
+    setCloudStatus('off');
+    showToast('Cloud sync off — using this device only.');
+  };
+  const copySql = async () => {
+    try { await navigator.clipboard.writeText(SETUP_SQL); showToast('SQL copied — paste it in the Supabase SQL Editor.'); }
+    catch { showToast('Copy failed — select the SQL manually.'); }
   };
 
   const requireName = () => {
@@ -220,7 +298,8 @@ export default function App() {
       if (navigator.vibrate) navigator.vibrate(12);
     }
     const next: Records = { ...records, [todayKey]: { ...rec, [shift]: logs } };
-    persist(next);
+    const pruned: Records = {}; Object.entries(next).forEach(([d, v]) => { if (isWithinHistory(d)) pruned[d] = v; });
+    persist(pruned);
   };
 
   const tryAdmin = () => { if (adminUnlocked) setView('admin'); else setShowGate(true); };
@@ -232,17 +311,17 @@ export default function App() {
   /* ----- checklist editing ----- */
   const updateTask = (s: Shift, id: string, f: 'label' | 'detail', v: string) => {
     if (!adminUnlocked) return;
-    setChecklists(cur => { const next = { ...cur, [s]: cur[s].map(t => t.id === id ? { ...t, [f]: v } : t) }; void saveState(CHECKLISTS_KEY, next); return next; });
+    setChecklists(cur => { const next = { ...cur, [s]: cur[s].map(t => t.id === id ? { ...t, [f]: v } : t) }; save(CHECKLISTS_KEY, next); return next; });
   };
   const addTask = (s: Shift) => {
     if (!adminUnlocked) return;
     const t: TaskDef = { id: `${s}-${Date.now()}`, label: 'New task', detail: 'Describe the standard.' };
-    setChecklists(cur => { const next = { ...cur, [s]: [...cur[s], t] }; void saveState(CHECKLISTS_KEY, next); return next; });
+    setChecklists(cur => { const next = { ...cur, [s]: [...cur[s], t] }; save(CHECKLISTS_KEY, next); return next; });
     showToast('Task added.');
   };
   const removeTask = (s: Shift, id: string) => {
     if (!adminUnlocked || !window.confirm('Remove this task from the shared list?')) return;
-    setChecklists(cur => { const next = { ...cur, [s]: cur[s].filter(t => t.id !== id) }; void saveState(CHECKLISTS_KEY, next); return next; });
+    setChecklists(cur => { const next = { ...cur, [s]: cur[s].filter(t => t.id !== id) }; save(CHECKLISTS_KEY, next); return next; });
     showToast('Task removed.');
   };
 
@@ -276,7 +355,7 @@ export default function App() {
     if (next.length < 4) { setCodeMsg({ ok: false, text: 'Use at least 4 characters.' }); return; }
     if (next !== confirmCode.trim()) { setCodeMsg({ ok: false, text: 'The two codes do not match.' }); return; }
     setAdminCode(next);
-    void saveState(CODE_KEY, next);
+    save(CODE_KEY, next);
     setNewCode(''); setConfirmCode('');
     setCodeMsg({ ok: true, text: 'Admin code updated everywhere.' });
     showToast('Admin code updated.');
@@ -420,8 +499,8 @@ export default function App() {
 
         <div className="grid sm:grid-cols-3 gap-4 mt-14">
           {([
-            [Wifi, 'Shared sync', 'Live on every device, instantly'],
-            [History, 'Full history', 'Nothing disappears until an admin clears it'],
+            [cloudOn ? Wifi : CloudOff, 'Shared sync', cloudOn ? 'Live on every device, instantly' : 'This browser only — connect cloud in Admin'],
+            [History, '14-day archive', 'Older days auto-prune themselves'],
             [Download, 'CSV export', 'Keep a permanent copy anytime'],
           ] as [typeof Wifi, string, string][]).map(([Ic, t, s], i) => (
             <div key={t} style={{ animationDelay: `${200 + i * 90}ms` }} className="stagger glass rounded-[20px] px-6 py-5 flex items-center gap-4 hover:bg-white/25 transition-colors">
@@ -525,7 +604,7 @@ export default function App() {
             <p className="text-[12px] font-extrabold uppercase tracking-[0.22em] text-white/70">03 · archive</p>
             <h1 className="font-display uppercase text-[56px] lg:text-[84px] leading-[0.9] tracking-[-0.01em] mt-2">History</h1>
           </div>
-          <p className="text-[12px] font-bold text-white/70 max-w-[240px] text-right">Showing the last 14 days below. Every day ever recorded stays saved until an admin clears it.</p>
+          <p className="text-[12px] font-bold text-white/70 max-w-[240px] text-right">Rolling 14-day window. Older days auto-clear — export to keep them.</p>
         </div>
         <div className="flex gap-3 overflow-x-auto pb-3">
           {dates.map(d => {
@@ -631,7 +710,7 @@ export default function App() {
               <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2">To<input type="date" className="glass-input" value={exportTo} onChange={e => setExportTo(e.target.value)} /></label>
             </div>
             <button onClick={exportCsv} className="pill-solid mt-7"><Download width={16} height={16} /> Download CSV</button>
-            <p className="text-[12px] font-bold text-white/65 mt-6">{Object.keys(records).length} days in storage · nothing auto-deletes</p>
+            <p className="text-[12px] font-bold text-white/65 mt-6">{Object.keys(records).length} days in storage · auto-prunes past 14</p>
           </div>
         </div>
       )}
@@ -691,17 +770,64 @@ export default function App() {
               </p>
               <button onClick={changeCode} disabled={!newCode || !confirmCode} className="pill-solid mt-5 disabled:opacity-40 disabled:hover:transform-none"><ShieldCheck width={16} height={16} /> Update code</button>
             </div>
-            <div className="glass-soft rounded-[24px] p-6">
-              <p className="text-[13px] font-semibold text-white/80 leading-relaxed">Roster, code, checklists, and logs all live in shared storage — changes here reach every device within seconds. Nothing is ever deleted automatically. The code is a team convenience gate, not server-grade security.</p>
-            </div>
             <div className="glass rounded-[24px] p-6">
               <div className="flex items-center gap-3">
-                <span className="w-10 h-10 rounded-full bg-white/20 grid place-items-center"><Trash2 width={17} height={17} /></span>
-                <div><p className="text-[18px] font-extrabold">Clear old records</p><p className="text-[11px] font-bold text-white/65">Manual only — nothing auto-deletes</p></div>
+                <span className="w-10 h-10 rounded-full bg-white/20 grid place-items-center">{cloudOn ? <Cloud width={17} height={17} /> : <CloudOff width={17} height={17} />}</span>
+                <div>
+                  <p className="text-[18px] font-extrabold">Cloud sync</p>
+                  <p className="text-[11px] font-bold text-white/65">
+                    {cloudStatus === 'connected' && 'Connected — every device updates live'}
+                    {cloudStatus === 'checking' && 'Checking your Supabase database…'}
+                    {cloudStatus === 'needs-setup' && 'Database reachable — one-time table setup needed'}
+                    {(cloudStatus === 'error' || cloudStatus === 'off') && 'Off — changes stay in this browser only'}
+                  </p>
+                </div>
               </div>
-              <p className="text-[12.5px] font-semibold text-white/75 mt-4 leading-relaxed">Every day is kept forever unless you clear it here. Pick a date — everything before it is permanently removed from every device.</p>
-              <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2 mt-4">Delete everything before<input type="date" className="glass-input" value={clearBeforeDate} onChange={e => setClearBeforeDate(e.target.value)} /></label>
-              <button onClick={() => clearRecordsBefore(clearBeforeDate)} className="pill-solid mt-5"><Trash2 width={16} height={16} /> Clear records before this date</button>
+
+              {cloudStatus === 'connected' && (
+                <>
+                  <div className="flex items-center gap-2.5 mt-5 glass-soft rounded-[14px] px-4 py-3">
+                    <span className="w-2 h-2 rounded-full bg-white pulse-soft" />
+                    <span className="text-[13px] font-extrabold">Live</span>
+                    <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-white/60"><Database width={12} height={12} /> Supabase</span>
+                  </div>
+                  <p className="text-[12px] font-semibold text-white/70 mt-4 leading-relaxed">Checklists, roster, admin code, and every signed task persist in your database and sync across all devices. Refresh-proof and shared.</p>
+                  <button onClick={goLocal} className="pill mt-5 text-[12px]"><CloudOff width={14} height={14} /> Use this device only</button>
+                </>
+              )}
+
+              {cloudStatus === 'needs-setup' && (
+                <>
+                  <p className="text-[12.5px] font-semibold text-white/80 leading-relaxed mt-4">Your Supabase project is connected, but the storage table doesn't exist yet. Run this once in the <span className="text-white">SQL Editor</span> and everything becomes permanent and shared.</p>
+                  <div className="relative mt-4">
+                    <pre className="glass-soft rounded-[14px] p-4 pr-14 text-[10.5px] leading-relaxed font-mono text-white/85 overflow-x-auto whitespace-pre">{SETUP_SQL}</pre>
+                    <button onClick={() => void copySql()} aria-label="Copy SQL" className="absolute top-3 right-3 w-9 h-9 rounded-full bg-white text-[#1c6ba4] grid place-items-center hover:rotate-[-6deg] transition-transform"><Copy width={15} height={15} /></button>
+                  </div>
+                  <button onClick={() => void retryCloud()} className="pill-solid mt-4"><RefreshCw width={15} height={15} /> I ran it — check again</button>
+                </>
+              )}
+
+              {(cloudStatus === 'error' || cloudStatus === 'off') && (
+                <>
+                  <p className="text-[12.5px] font-semibold text-white/80 leading-relaxed mt-4">
+                    {cloudStatus === 'error'
+                      ? "Couldn't reach the database. Check the project URL and publishable key in src/supabaseClient.ts, then retry."
+                      : 'Sync is paused on this device. Data still saves to this browser. Turn it back on to share across devices.'}
+                  </p>
+                  <button onClick={() => void retryCloud()} className="pill-solid mt-5"><RefreshCw width={15} height={15} /> Retry connection</button>
+                </>
+              )}
+
+              {cloudStatus === 'checking' && (
+                <div className="flex items-center gap-3 mt-5 glass-soft rounded-[14px] px-4 py-3">
+                  <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  <span className="text-[12px] font-bold text-white/75">Contacting Supabase…</span>
+                </div>
+              )}
+            </div>
+
+            <div className="glass-soft rounded-[24px] p-6">
+              <p className="text-[13px] font-semibold text-white/80 leading-relaxed">Without cloud sync, data persists in each browser's own storage only — which is exactly why edits looked like they reverted after deploy. The admin code is a team convenience gate, not server-grade security.</p>
             </div>
           </div>
         </div>
