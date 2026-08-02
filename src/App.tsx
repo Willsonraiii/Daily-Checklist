@@ -9,7 +9,6 @@ import {
   probeCloud, SETUP_SQL, subscribeCloud, writeCloud, type CloudPath, type CloudStatus,
 } from './lib/cloud';
 
-// ----- Default lists. Edit here; admin edits override and sync to the team. -----
 const DEFAULT_CHECKLISTS = {
   opening: [
     { id: 'open-1', label: 'Unlock and disarm alarm', detail: 'Front and back doors, then disarm the system.' },
@@ -164,6 +163,39 @@ export default function App() {
   const todayRecord = records[todayKey] || emptyDay(todayKey);
   const selectedRecord = records[selectedDate] || emptyDay(selectedDate);
   const onRoster = (name: string) => users.some(u => u.name.toLowerCase() === name.trim().toLowerCase());
+  const cloudOn = cloudStatus === 'connected';
+
+  const CLOUD_PATHS: Record<string, CloudPath> = { [RECORDS_KEY]: 'records', [CHECKLISTS_KEY]: 'checklists', [USERS_KEY]: 'users', [CODE_KEY]: 'adminCode' };
+  const save = (key: string, value: unknown) => { void sharedSet(key, value); if (cloudOn) writeCloud(CLOUD_PATHS[key], value); };
+  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => save(RECORDS_KEY, next), 250); };
+  const persistUsers = (next: TeamUser[]) => { setUsers(next); save(USERS_KEY, next); };
+
+  const attachCloud = () => {
+    cloudUnsub.current();
+    migratedRef.current = false;
+    cloudUnsub.current = subscribeCloud(data => {
+      const seed = (key: string, cloudVal: unknown) => {
+        if (cloudVal == null && !migratedRef.current) {
+          try { const raw = window.localStorage.getItem(key); if (raw) writeCloud(CLOUD_PATHS[key], JSON.parse(raw)); } catch { /* ignore */ }
+        }
+      };
+      if (data.records && typeof data.records === 'object') {
+        const pruned: Records = {};
+        Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
+        window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
+        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
+      } else seed(RECORDS_KEY, data.records);
+      const cfg = asChecklistConfig(data.checklists);
+      if (cfg) { window.localStorage.setItem(CHECKLISTS_KEY, JSON.stringify(cfg)); setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(cfg) ? cur : cfg)); }
+      else seed(CHECKLISTS_KEY, data.checklists);
+      const us = asUsers(data.users);
+      if (us) { window.localStorage.setItem(USERS_KEY, JSON.stringify(us)); setUsers(cur => (JSON.stringify(cur) === JSON.stringify(us) ? cur : us)); }
+      else seed(USERS_KEY, data.users);
+      if (typeof data.adminCode === 'string' && data.adminCode.trim()) setAdminCode(data.adminCode.trim());
+      else seed(CODE_KEY, data.adminCode);
+      migratedRef.current = true;
+    });
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -184,6 +216,7 @@ export default function App() {
       if (typeof storedCode === 'string' && storedCode.trim()) setAdminCode(storedCode.trim());
       const saved = window.localStorage.getItem('daily_current_staff');
       if (saved) setStaffName(saved);
+
       const status = await probeCloud();
       if (status === 'connected') { setCloudStatus('connected'); attachCloud(); }
       else setCloudStatus(status);
@@ -230,41 +263,6 @@ export default function App() {
 
   const showToast = (m: string) => { setToast(m); window.setTimeout(() => setToast(''), 2600); };
 
-  const cloudOn = cloudStatus === 'connected';
-  const CLOUD_PATHS: Record<string, CloudPath> = { [RECORDS_KEY]: 'records', [CHECKLISTS_KEY]: 'checklists', [USERS_KEY]: 'users', [CODE_KEY]: 'adminCode' };
-  // Writes go to the local browser AND, when connected, to the shared cloud database.
-  const save = (key: string, value: unknown) => { void sharedSet(key, value); if (cloudOn) writeCloud(CLOUD_PATHS[key], value); };
-  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => save(RECORDS_KEY, next), 250); };
-  const persistUsers = (next: TeamUser[]) => { setUsers(next); save(USERS_KEY, next); };
-
-  const attachCloud = () => {
-    cloudUnsub.current();
-    migratedRef.current = false;
-    cloudUnsub.current = subscribeCloud(data => {
-      const seed = (key: string, cloudVal: unknown) => {
-        // First sync: if the cloud is empty for this key, push the local copy up so nothing is lost.
-        if (cloudVal == null && !migratedRef.current) {
-          try { const raw = window.localStorage.getItem(key); if (raw) writeCloud(CLOUD_PATHS[key], JSON.parse(raw)); } catch { /* ignore */ }
-        }
-      };
-      if (data.records && typeof data.records === 'object') {
-        const pruned: Records = {};
-        Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
-        window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
-        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
-      } else seed(RECORDS_KEY, data.records);
-      const cfg = asChecklistConfig(data.checklists);
-      if (cfg) { window.localStorage.setItem(CHECKLISTS_KEY, JSON.stringify(cfg)); setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(cfg) ? cur : cfg)); }
-      else seed(CHECKLISTS_KEY, data.checklists);
-      const us = asUsers(data.users);
-      if (us) { window.localStorage.setItem(USERS_KEY, JSON.stringify(us)); setUsers(cur => (JSON.stringify(cur) === JSON.stringify(us) ? cur : us)); }
-      else seed(USERS_KEY, data.users);
-      if (typeof data.adminCode === 'string' && data.adminCode.trim()) setAdminCode(data.adminCode.trim());
-      else seed(CODE_KEY, data.adminCode);
-      migratedRef.current = true;
-    });
-  };
-
   const retryCloud = async () => {
     setCloudStatus('checking');
     const status = await probeCloud();
@@ -308,7 +306,6 @@ export default function App() {
     else setGateError('Wrong code. Ask the owner for access.');
   };
 
-  /* ----- checklist editing ----- */
   const updateTask = (s: Shift, id: string, f: 'label' | 'detail', v: string) => {
     if (!adminUnlocked) return;
     setChecklists(cur => { const next = { ...cur, [s]: cur[s].map(t => t.id === id ? { ...t, [f]: v } : t) }; save(CHECKLISTS_KEY, next); return next; });
@@ -325,7 +322,6 @@ export default function App() {
     showToast('Task removed.');
   };
 
-  /* ----- user management ----- */
   const addUser = () => {
     const name = newUserName.trim();
     if (!name) return;
@@ -349,7 +345,6 @@ export default function App() {
     else showToast(`${target.name} removed.`);
   };
 
-  /* ----- admin code ----- */
   const changeCode = () => {
     const next = newCode.trim();
     if (next.length < 4) { setCodeMsg({ ok: false, text: 'Use at least 4 characters.' }); return; }
@@ -359,6 +354,13 @@ export default function App() {
     setNewCode(''); setConfirmCode('');
     setCodeMsg({ ok: true, text: 'Admin code updated everywhere.' });
     showToast('Admin code updated.');
+  };
+
+  const clearAllRecords = () => {
+    if (!adminUnlocked) return;
+    if (!window.confirm('Are you sure you want to delete all historical logs and records? This cannot be undone.')) return;
+    persist({});
+    showToast('All past records deleted.');
   };
 
   const exportCsv = () => {
@@ -449,8 +451,6 @@ export default function App() {
         ))}
       </div>
     );
-
-  /* ------------------------------ views ------------------------------ */
 
   const HomeView = () => (
     <div className="view-enter">
@@ -699,10 +699,22 @@ export default function App() {
 
       {adminPane === 'export' && (
         <div className="grid grid-cols-12 gap-6">
-          <div className="col-span-12 lg:col-span-5">
-            <h2 className="text-[30px] font-extrabold tracking-tight leading-tight">Keep a permanent copy</h2>
-            <p className="text-[14px] font-semibold text-white/75 mt-4 leading-relaxed max-w-[440px]">Download every signed task in your chosen range as CSV — date, shift, task, staff, and exact timestamps. Run this before older days roll off the archive.</p>
-            <button onClick={() => { setExportFrom(dates[dates.length - 1]); setExportTo(todayKey); }} className="pill mt-7 text-[12px]">Use full 14 days <ArrowRight width={14} height={14} /></button>
+          <div className="col-span-12 lg:col-span-5 space-y-6">
+            <div className="glass rounded-[24px] p-6">
+              <h2 className="text-[30px] font-extrabold tracking-tight leading-tight">Keep a permanent copy</h2>
+              <p className="text-[14px] font-semibold text-white/75 mt-4 leading-relaxed">Download every signed task in your chosen range as CSV — date, shift, task, staff, and exact timestamps. Run this before older days roll off the archive.</p>
+              <button onClick={() => { setExportFrom(dates[dates.length - 1]); setExportTo(todayKey); }} className="pill mt-7 text-[12px]">Use full 14 days <ArrowRight width={14} height={14} /></button>
+            </div>
+            <div className="glass-soft rounded-[24px] p-6">
+              <div className="flex items-center gap-3">
+                <span className="w-10 h-10 rounded-full bg-red-500/20 text-red-200 grid place-items-center"><Trash2 width={17} height={17} /></span>
+                <div><p className="text-[18px] font-extrabold">Danger zone</p><p className="text-[11px] font-bold text-white/65">Purge historical logs</p></div>
+              </div>
+              <p className="text-[13px] font-semibold text-white/75 mt-4 leading-relaxed">Permanently delete all past and present completion records from storage and database. (Consider exporting to CSV first!)</p>
+              <button onClick={clearAllRecords} className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-600 text-white font-extrabold text-[12px] hover:bg-red-500 transition-colors shadow-lg">
+                <Trash2 width={14} height={14} /> Delete all records
+              </button>
+            </div>
           </div>
           <div className="col-span-12 lg:col-span-7 glass rounded-[24px] p-6 sm:p-8">
             <div className="grid sm:grid-cols-2 gap-5">
@@ -717,7 +729,6 @@ export default function App() {
 
       {adminPane === 'settings' && (
         <div className="grid grid-cols-12 gap-6">
-          {/* team roster */}
           <div className="col-span-12 lg:col-span-6 glass rounded-[24px] p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -749,7 +760,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* admin code */}
           <div className="col-span-12 lg:col-span-6 space-y-6">
             <div className="glass rounded-[24px] p-6">
               <div className="flex items-center gap-3">
@@ -764,12 +774,12 @@ export default function App() {
                 <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2">New code<input type="password" className="glass-input" value={newCode} onChange={e => setNewCode(e.target.value)} placeholder="Min. 4 characters" autoComplete="new-password" /></label>
                 <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2">Confirm<input type="password" className="glass-input" value={confirmCode} onChange={e => setConfirmCode(e.target.value)} placeholder="Repeat it" onKeyDown={e => { if (e.key === 'Enter') changeCode(); }} autoComplete="new-password" /></label>
               </div>
-              {/* fixed-height slot so validation feedback never shifts the layout */}
               <p className={`mt-3 min-h-[18px] text-[12px] font-extrabold ${codeMsg ? (codeMsg.ok ? 'text-white' : 'text-white') : 'text-transparent'}`}>
                 {codeMsg ? `${codeMsg.ok ? '✓' : '⚠'} ${codeMsg.text}` : '·'}
               </p>
               <button onClick={changeCode} disabled={!newCode || !confirmCode} className="pill-solid mt-5 disabled:opacity-40 disabled:hover:transform-none"><ShieldCheck width={16} height={16} /> Update code</button>
             </div>
+
             <div className="glass rounded-[24px] p-6">
               <div className="flex items-center gap-3">
                 <span className="w-10 h-10 rounded-full bg-white/20 grid place-items-center">{cloudOn ? <Cloud width={17} height={17} /> : <CloudOff width={17} height={17} />}</span>
@@ -834,8 +844,6 @@ export default function App() {
       )}
     </div>
   );
-
-  /* ------------------------------ shell ------------------------------ */
 
   return (
     <div className="stage font-body">
