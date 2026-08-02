@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardList,
   Clock3, Cloud, CloudOff, Copy, Database, Download, FileDown, History, KeyRound,
-  Lock, Moon, PencilLine, Plus, RefreshCw, Settings, ShieldCheck, Sun, Trash2,
-  Unlock, User, UserPlus, Wifi, X,
+  Lock, Moon, PencilLine, Plus, RefreshCw, Settings, ShieldCheck, Sun,
+  Trash2, Unlock, User, UserPlus, Wifi, X,
 } from 'lucide-react';
 import {
   probeCloud, SETUP_SQL, subscribeCloud, writeCloud, type CloudPath, type CloudStatus,
 } from './lib/cloud';
 
+// ----- Default lists. Edit here; admin edits override and sync to the team. -----
 const DEFAULT_CHECKLISTS = {
   opening: [
     { id: 'open-1', label: 'Unlock and disarm alarm', detail: 'Front and back doors, then disarm the system.' },
@@ -151,6 +152,7 @@ export default function App() {
   const [confirmCode, setConfirmCode] = useState('');
   const [codeMsg, setCodeMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [cloudStatus, setCloudStatus] = useState<'checking' | 'off' | CloudStatus>('checking');
+  const [deferredPrompt, setDeferredPrompt] = useState<any | null>(null);
   const [toast, setToast] = useState('');
   const [justChecked, setJustChecked] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -159,43 +161,32 @@ export default function App() {
   const cloudUnsub = useRef<() => void>(() => undefined);
   const migratedRef = useRef(false);
 
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const promptInstall = async () => {
+    if (!deferredPrompt) {
+      showToast('App is already installed, or browser install prompt isn’t available right now.');
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      showToast('Thanks for installing Daily Check!');
+    }
+  };
+
   const todayKey = formatKey(new Date());
   const todayRecord = records[todayKey] || emptyDay(todayKey);
   const selectedRecord = records[selectedDate] || emptyDay(selectedDate);
   const onRoster = (name: string) => users.some(u => u.name.toLowerCase() === name.trim().toLowerCase());
-  const cloudOn = cloudStatus === 'connected';
-
-  const CLOUD_PATHS: Record<string, CloudPath> = { [RECORDS_KEY]: 'records', [CHECKLISTS_KEY]: 'checklists', [USERS_KEY]: 'users', [CODE_KEY]: 'adminCode' };
-  const save = (key: string, value: unknown) => { void sharedSet(key, value); if (cloudOn) writeCloud(CLOUD_PATHS[key], value); };
-  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => save(RECORDS_KEY, next), 250); };
-  const persistUsers = (next: TeamUser[]) => { setUsers(next); save(USERS_KEY, next); };
-
-  const attachCloud = () => {
-    cloudUnsub.current();
-    migratedRef.current = false;
-    cloudUnsub.current = subscribeCloud(data => {
-      const seed = (key: string, cloudVal: unknown) => {
-        if (cloudVal == null && !migratedRef.current) {
-          try { const raw = window.localStorage.getItem(key); if (raw) writeCloud(CLOUD_PATHS[key], JSON.parse(raw)); } catch { /* ignore */ }
-        }
-      };
-      if (data.records && typeof data.records === 'object') {
-        const pruned: Records = {};
-        Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
-        window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
-        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
-      } else seed(RECORDS_KEY, data.records);
-      const cfg = asChecklistConfig(data.checklists);
-      if (cfg) { window.localStorage.setItem(CHECKLISTS_KEY, JSON.stringify(cfg)); setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(cfg) ? cur : cfg)); }
-      else seed(CHECKLISTS_KEY, data.checklists);
-      const us = asUsers(data.users);
-      if (us) { window.localStorage.setItem(USERS_KEY, JSON.stringify(us)); setUsers(cur => (JSON.stringify(cur) === JSON.stringify(us) ? cur : us)); }
-      else seed(USERS_KEY, data.users);
-      if (typeof data.adminCode === 'string' && data.adminCode.trim()) setAdminCode(data.adminCode.trim());
-      else seed(CODE_KEY, data.adminCode);
-      migratedRef.current = true;
-    });
-  };
 
   useEffect(() => {
     const load = async () => {
@@ -216,7 +207,6 @@ export default function App() {
       if (typeof storedCode === 'string' && storedCode.trim()) setAdminCode(storedCode.trim());
       const saved = window.localStorage.getItem('daily_current_staff');
       if (saved) setStaffName(saved);
-
       const status = await probeCloud();
       if (status === 'connected') { setCloudStatus('connected'); attachCloud(); }
       else setCloudStatus(status);
@@ -263,6 +253,41 @@ export default function App() {
 
   const showToast = (m: string) => { setToast(m); window.setTimeout(() => setToast(''), 2600); };
 
+  const cloudOn = cloudStatus === 'connected';
+  const CLOUD_PATHS: Record<string, CloudPath> = { [RECORDS_KEY]: 'records', [CHECKLISTS_KEY]: 'checklists', [USERS_KEY]: 'users', [CODE_KEY]: 'adminCode' };
+  // Writes go to the local browser AND, when connected, to the shared cloud database.
+  const save = (key: string, value: unknown) => { void sharedSet(key, value); if (cloudOn) writeCloud(CLOUD_PATHS[key], value); };
+  const persist = (next: Records) => { setRecords(next); if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = window.setTimeout(() => save(RECORDS_KEY, next), 250); };
+  const persistUsers = (next: TeamUser[]) => { setUsers(next); save(USERS_KEY, next); };
+
+  const attachCloud = () => {
+    cloudUnsub.current();
+    migratedRef.current = false;
+    cloudUnsub.current = subscribeCloud(data => {
+      const seed = (key: string, cloudVal: unknown) => {
+        // First sync: if the cloud is empty for this key, push the local copy up so nothing is lost.
+        if (cloudVal == null && !migratedRef.current) {
+          try { const raw = window.localStorage.getItem(key); if (raw) writeCloud(CLOUD_PATHS[key], JSON.parse(raw)); } catch { /* ignore */ }
+        }
+      };
+      if (data.records && typeof data.records === 'object') {
+        const pruned: Records = {};
+        Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
+        window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
+        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
+      } else seed(RECORDS_KEY, data.records);
+      const cfg = asChecklistConfig(data.checklists);
+      if (cfg) { window.localStorage.setItem(CHECKLISTS_KEY, JSON.stringify(cfg)); setChecklists(cur => (JSON.stringify(cur) === JSON.stringify(cfg) ? cur : cfg)); }
+      else seed(CHECKLISTS_KEY, data.checklists);
+      const us = asUsers(data.users);
+      if (us) { window.localStorage.setItem(USERS_KEY, JSON.stringify(us)); setUsers(cur => (JSON.stringify(cur) === JSON.stringify(us) ? cur : us)); }
+      else seed(USERS_KEY, data.users);
+      if (typeof data.adminCode === 'string' && data.adminCode.trim()) setAdminCode(data.adminCode.trim());
+      else seed(CODE_KEY, data.adminCode);
+      migratedRef.current = true;
+    });
+  };
+
   const retryCloud = async () => {
     setCloudStatus('checking');
     const status = await probeCloud();
@@ -306,6 +331,7 @@ export default function App() {
     else setGateError('Wrong code. Ask the owner for access.');
   };
 
+  /* ----- checklist editing ----- */
   const updateTask = (s: Shift, id: string, f: 'label' | 'detail', v: string) => {
     if (!adminUnlocked) return;
     setChecklists(cur => { const next = { ...cur, [s]: cur[s].map(t => t.id === id ? { ...t, [f]: v } : t) }; save(CHECKLISTS_KEY, next); return next; });
@@ -322,6 +348,7 @@ export default function App() {
     showToast('Task removed.');
   };
 
+  /* ----- user management ----- */
   const addUser = () => {
     const name = newUserName.trim();
     if (!name) return;
@@ -345,6 +372,7 @@ export default function App() {
     else showToast(`${target.name} removed.`);
   };
 
+  /* ----- admin code ----- */
   const changeCode = () => {
     const next = newCode.trim();
     if (next.length < 4) { setCodeMsg({ ok: false, text: 'Use at least 4 characters.' }); return; }
@@ -354,13 +382,6 @@ export default function App() {
     setNewCode(''); setConfirmCode('');
     setCodeMsg({ ok: true, text: 'Admin code updated everywhere.' });
     showToast('Admin code updated.');
-  };
-
-  const clearAllRecords = () => {
-    if (!adminUnlocked) return;
-    if (!window.confirm('Are you sure you want to delete all historical logs and records? This cannot be undone.')) return;
-    persist({});
-    showToast('All past records deleted.');
   };
 
   const exportCsv = () => {
@@ -379,6 +400,13 @@ export default function App() {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a'); a.href = url; a.download = `daily-check_${exportFrom}_to_${exportTo}.csv`; a.click();
     URL.revokeObjectURL(url); showToast('CSV download started.');
+  };
+
+  const clearAllRecords = () => {
+    if (!adminUnlocked) return;
+    if (!window.confirm('Are you sure you want to delete all historical logs and records? This cannot be undone.')) return;
+    persist({});
+    showToast('All past records deleted.');
   };
 
   if (loading) {
@@ -451,6 +479,8 @@ export default function App() {
         ))}
       </div>
     );
+
+  /* ------------------------------ views ------------------------------ */
 
   const HomeView = () => (
     <div className="view-enter">
@@ -729,6 +759,7 @@ export default function App() {
 
       {adminPane === 'settings' && (
         <div className="grid grid-cols-12 gap-6">
+          {/* team roster */}
           <div className="col-span-12 lg:col-span-6 glass rounded-[24px] p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -760,6 +791,7 @@ export default function App() {
             </div>
           </div>
 
+          {/* admin code */}
           <div className="col-span-12 lg:col-span-6 space-y-6">
             <div className="glass rounded-[24px] p-6">
               <div className="flex items-center gap-3">
@@ -774,12 +806,12 @@ export default function App() {
                 <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2">New code<input type="password" className="glass-input" value={newCode} onChange={e => setNewCode(e.target.value)} placeholder="Min. 4 characters" autoComplete="new-password" /></label>
                 <label className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/75 grid gap-2">Confirm<input type="password" className="glass-input" value={confirmCode} onChange={e => setConfirmCode(e.target.value)} placeholder="Repeat it" onKeyDown={e => { if (e.key === 'Enter') changeCode(); }} autoComplete="new-password" /></label>
               </div>
+              {/* fixed-height slot so validation feedback never shifts the layout */}
               <p className={`mt-3 min-h-[18px] text-[12px] font-extrabold ${codeMsg ? (codeMsg.ok ? 'text-white' : 'text-white') : 'text-transparent'}`}>
                 {codeMsg ? `${codeMsg.ok ? '✓' : '⚠'} ${codeMsg.text}` : '·'}
               </p>
               <button onClick={changeCode} disabled={!newCode || !confirmCode} className="pill-solid mt-5 disabled:opacity-40 disabled:hover:transform-none"><ShieldCheck width={16} height={16} /> Update code</button>
             </div>
-
             <div className="glass rounded-[24px] p-6">
               <div className="flex items-center gap-3">
                 <span className="w-10 h-10 rounded-full bg-white/20 grid place-items-center">{cloudOn ? <Cloud width={17} height={17} /> : <CloudOff width={17} height={17} />}</span>
@@ -836,6 +868,20 @@ export default function App() {
               )}
             </div>
 
+            <div className="glass rounded-[24px] p-6">
+              <div className="flex items-center gap-3">
+                <span className="w-10 h-10 rounded-full bg-white/20 grid place-items-center"><Download width={17} height={17} /></span>
+                <div>
+                  <p className="text-[18px] font-extrabold">Desktop & mobile app</p>
+                  <p className="text-[11px] font-bold text-white/65">Install as a standalone app on your device</p>
+                </div>
+              </div>
+              <p className="text-[12.5px] font-semibold text-white/80 leading-relaxed mt-4">Run Daily Check like a native desktop app or phone app with its own window, taskbar shortcut, and offline support.</p>
+              <button onClick={promptInstall} className="pill-solid mt-5">
+                <Download width={16} height={16} /> Install Daily Check
+              </button>
+            </div>
+
             <div className="glass-soft rounded-[24px] p-6">
               <p className="text-[13px] font-semibold text-white/80 leading-relaxed">Without cloud sync, data persists in each browser's own storage only — which is exactly why edits looked like they reverted after deploy. The admin code is a team convenience gate, not server-grade security.</p>
             </div>
@@ -844,6 +890,8 @@ export default function App() {
       )}
     </div>
   );
+
+  /* ------------------------------ shell ------------------------------ */
 
   return (
     <div className="stage font-body">
