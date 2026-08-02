@@ -171,15 +171,21 @@ export default function App() {
   }, []);
 
   const promptInstall = async () => {
-    if (!deferredPrompt) {
-      showToast('App is already installed, or browser install prompt isn’t available right now.');
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setDeferredPrompt(null);
+        showToast('Thanks for installing Daily Check!');
+      }
       return;
     }
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setDeferredPrompt(null);
-      showToast('Thanks for installing Daily Check!');
+    // Fallback instructions for browsers/devices where automated prompt requires manual menu action
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    if (isIOS) {
+      window.alert('To install on iOS: Tap the Share button in Safari, then select "Add to Home Screen".');
+    } else {
+      window.alert('To install: Open your browser menu (three dots in Chrome/Edge) and select "Install app" or "Add to Home screen".');
     }
   };
 
