@@ -1,9 +1,11 @@
-const CACHE_NAME = 'daily-check-v1';
+const CACHE_NAME = 'daily-check-v2';
 const ASSETS = [
   '/',
   '/index.html',
   '/favicon.svg',
   '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png',
   '/manifest.json'
 ];
 
