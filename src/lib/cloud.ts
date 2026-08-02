@@ -1,6 +1,6 @@
 import { supabase } from '../supabaseClient';
 
-export type CloudPath = 'records' | 'checklists' | 'users' | 'adminCode';
+export type CloudPath = 'records' | 'checklists' | 'users';
 export type CloudData = Record<CloudPath, unknown>;
 export type CloudStatus = 'connected' | 'needs-setup' | 'error';
 
@@ -23,18 +23,41 @@ export async function probeCloud(): Promise<CloudStatus> {
 export async function readAll(): Promise<CloudData | null> {
   const { data, error } = await supabase.from(TABLE).select('key, value');
   if (error || !data) return null;
-  const out: CloudData = { records: null, checklists: null, users: null, adminCode: null };
+  const out: CloudData = { records: null, checklists: null, users: null };
   for (const row of data as { key: string; value: unknown }[]) {
     if (row.key in out) (out as Record<string, unknown>)[row.key] = row.value;
   }
   return out;
 }
 
-export function writeCloud(path: CloudPath, value: unknown) {
+// Only 'records' is allowed through direct writes now (see RLS policy) —
+// this is what staff hit when they check off tasks, no login needed.
+export function writeCloud(path: 'records', value: unknown) {
   void supabase
     .from(TABLE)
     .upsert({ key: path, value, updated_at: new Date().toISOString() }, { onConflict: 'key' })
     .then(() => undefined);
+}
+
+// Admin-gated write: the Postgres function re-checks the code server-side
+// before touching checklists/users. The code never gets stored or synced anywhere.
+export async function adminWrite(code: string, path: 'checklists' | 'users', value: unknown): Promise<boolean> {
+  const { data, error } = await supabase.rpc('admin_write', { p_code: code, p_key: path, p_value: value });
+  if (error) return false;
+  return Boolean(data);
+}
+
+// Verify a code without ever fetching the stored hash/value to the client.
+export async function verifyAdminCode(code: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('verify_admin_code', { code });
+  if (error) return false;
+  return Boolean(data);
+}
+
+export async function changeAdminCode(oldCode: string, newCode: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('change_admin_code', { old_code: oldCode, new_code: newCode });
+  if (error) return false;
+  return Boolean(data);
 }
 
 export function subscribeCloud(cb: (data: CloudData) => void): () => void {
@@ -52,16 +75,4 @@ export function subscribeCloud(cb: (data: CloudData) => void): () => void {
   };
 }
 
-export const SETUP_SQL = `-- Run once in Supabase: SQL Editor → New query → paste → Run
-create table if not exists public.daily_check_kv (
-  key text primary key,
-  value jsonb not null,
-  updated_at timestamptz not null default now()
-);
-
-alter table public.daily_check_kv enable row level security;
-
-create policy "team read"   on public.daily_check_kv for select using (true);
-create policy "team insert" on public.daily_check_kv for insert with check (true);
-create policy "team update" on public.daily_check_kv for update using (true) with check (true);
-create policy "team delete" on public.daily_check_kv for delete using (true);`;
+export const SETUP_SQL = `-- see secure_daily_check.sql for the full, current migration`;
