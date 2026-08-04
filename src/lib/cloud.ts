@@ -1,6 +1,6 @@
 import { supabase } from '../supabaseClient';
 
-export type CloudPath = 'records' | 'checklists' | 'users';
+export type CloudPath = 'records' | 'checklists' | 'users' | 'attendance' | 'auditLogs';
 export type CloudData = Record<CloudPath, unknown>;
 export type CloudStatus = 'connected' | 'needs-setup' | 'error';
 
@@ -23,16 +23,16 @@ export async function probeCloud(): Promise<CloudStatus> {
 export async function readAll(): Promise<CloudData | null> {
   const { data, error } = await supabase.from(TABLE).select('key, value');
   if (error || !data) return null;
-  const out: CloudData = { records: null, checklists: null, users: null };
+  const out: CloudData = { records: null, checklists: null, users: null, attendance: null, auditLogs: null };
   for (const row of data as { key: string; value: unknown }[]) {
     if (row.key in out) (out as Record<string, unknown>)[row.key] = row.value;
   }
   return out;
 }
 
-// Only 'records' is allowed through direct writes now (see RLS policy) —
-// this is what staff hit when they check off tasks, no login needed.
-export function writeCloud(path: 'records', value: unknown) {
+// 'records' and 'attendance' are allowed through direct writes (see RLS policy) —
+// these are what staff hit day-to-day (ticking tasks, clocking in/out), no login needed.
+export function writeCloud(path: 'records' | 'attendance', value: unknown) {
   void supabase
     .from(TABLE)
     .upsert({ key: path, value, updated_at: new Date().toISOString() }, { onConflict: 'key' })
@@ -40,8 +40,8 @@ export function writeCloud(path: 'records', value: unknown) {
 }
 
 // Admin-gated write: the Postgres function re-checks the code server-side
-// before touching checklists/users. The code never gets stored or synced anywhere.
-export async function adminWrite(code: string, path: 'checklists' | 'users', value: unknown): Promise<boolean> {
+// before touching checklists/users/auditLogs. The code never gets stored or synced anywhere.
+export async function adminWrite(code: string, path: 'checklists' | 'users' | 'auditLogs', value: unknown): Promise<boolean> {
   const { data, error } = await supabase.rpc('admin_write', { p_code: code, p_key: path, p_value: value });
   if (error) return false;
   return Boolean(data);
