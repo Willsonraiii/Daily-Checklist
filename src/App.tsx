@@ -3,12 +3,13 @@ import {
   ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardList,
   Clock3, Download, FileDown, History, KeyRound, Lock, Moon, PencilLine, Plus,
   Settings, ShieldCheck, Sun, Trash2, User, UserPlus, Wifi, X,
-  Briefcase, CheckCircle2, AlertCircle, UserCheck, Code, BellRing, Database
+  Briefcase, CheckCircle2, AlertCircle, UserCheck, Code, BellRing, Database, TrendingUp, Flame
 } from 'lucide-react';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 
 import {
   probeCloud, subscribeCloud, writeCloud, adminWrite, verifyAdminCode, changeAdminCode,
+  enqueueWrite, flushQueue,
   type CloudStatus,
 } from './lib/cloud';
 import { subscribeToPush, notifyManagers } from './lib/push';
@@ -33,6 +34,7 @@ type StaffMember = {
   weeklyDaysOff: number[];
   active: boolean;
   profilePhoto: string;
+  pin?: string;
 };
 
 const DEFAULT_USERS: StaffMember[] = [
@@ -83,7 +85,7 @@ function colorFor(name: string) {
 // ==========================================
 type Shift = 'opening' | 'closing';
 type View = 'home' | Shift | 'attendance' | 'history' | 'admin';
-type AdminPane = 'studio' | 'journal' | 'export' | 'settings' | 'setup';
+type AdminPane = 'studio' | 'journal' | 'export' | 'settings' | 'insights' | 'setup';
 type TaskDef = { id: string; label: string; detail: string };
 type ChecklistConfig = Record<Shift, TaskDef[]>;
 type TaskLog = { done: boolean; staff: string; ts: string };
@@ -123,6 +125,7 @@ function parseKey(k: string) { const [y, m, d] = k.split('-').map(Number); retur
 function isWithinHistory(k: string) { const t = new Date(); t.setHours(0, 0, 0, 0); const days = Math.floor((t.getTime() - parseKey(k).getTime()) / 86400000); return days >= 0 && days < 14; }
 function emptyDay(date: string): DayRecord { return { date, opening: {}, closing: {} }; }
 function prettyTime(iso: string) { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+function haptic(pattern: number | number[] = 12) { try { navigator.vibrate?.(pattern); } catch { /* unsupported */ } }
 
 function asStaff(v: unknown): StaffMember[] | null {
   if (!Array.isArray(v)) return null;
@@ -139,7 +142,8 @@ function asStaff(v: unknown): StaffMember[] | null {
       gracePeriod: typeof u.gracePeriod === 'number' ? u.gracePeriod : 5,
       weeklyDaysOff: Array.isArray(u.weeklyDaysOff) ? u.weeklyDaysOff : [0],
       active: typeof u.active === 'boolean' ? u.active : true,
-      profilePhoto: typeof u.profilePhoto === 'string' ? u.profilePhoto : ''
+      profilePhoto: typeof u.profilePhoto === 'string' ? u.profilePhoto : '',
+      pin: typeof u.pin === 'string' && u.pin.length >= 4 ? u.pin : undefined
     }));
   return ok.length ? ok : null;
 }
@@ -283,7 +287,7 @@ function Ring({ pct, size = 64 }: { pct: number; size?: number }) {
         transition={{ duration: 0.9, ease: EASE }}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
-      <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fill="#f5f2ea" fontSize={size / 4.4} fontWeight="800" fontFamily="Manrope">{pct}%</text>
+      <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fill="var(--ring-label)" fontSize={size / 4.4} fontWeight="800" fontFamily="Manrope">{pct}%</text>
     </svg>
   );
 }
@@ -293,6 +297,22 @@ function Avatar({ name, size = 32 }: { name: string; size?: number }) {
     <span className="rounded-full grid place-items-center font-extrabold text-[#14121c] shrink-0 ring-1 ring-white/25" style={{ width: size, height: size, background: colorFor(name), fontSize: size * 0.38 }}>
       {name.slice(0, 2).toUpperCase()}
     </span>
+  );
+}
+
+function SkeletonRows({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-2" aria-hidden>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="glass-soft rounded-[18px] p-4 flex items-center gap-3">
+          <span className="skeleton w-9 h-9 rounded-full shrink-0" />
+          <span className="flex-1 space-y-2">
+            <span className="skeleton block h-3 rounded-full" style={{ width: `${72 - i * 8}%` }} />
+            <span className="skeleton block h-2.5 rounded-full" style={{ width: `${46 - i * 5}%` }} />
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -414,6 +434,7 @@ export default function App() {
   const [newStaffGrace, setNewStaffGrace] = useState(5);
   const [newStaffDaysOff, setNewStaffDaysOff] = useState<number[]>([0]);
   const [newStaffPhoto, setNewStaffPhoto] = useState('');
+  const [newStaffPin, setNewStaffPin] = useState('');
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
 
   const [newCode, setNewCode] = useState('');
@@ -423,6 +444,25 @@ export default function App() {
   const [justChecked, setJustChecked] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [liveClock, setLiveClock] = useState(new Date());
+
+  // theme
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
+
+  // confirm dialog (replaces window.confirm)
+  type ConfirmSpec = { title: string; body: string; confirmLabel: string; danger?: boolean; typedPhrase?: string; onConfirm: () => void };
+  const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  const [confirmTyped, setConfirmTyped] = useState('');
+
+  // staff PIN sign-in
+  const [pendingPinUser, setPendingPinUser] = useState<StaffMember | null>(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+
+  // offline queue badge
+  const [pendingSync, setPendingSync] = useState(0);
+
+  // timestamps of our latest local writes — guards against a stale remote echo reverting an optimistic tick
+  const lastLocalWrite = useRef<{ records: number; attendance: number }>({ records: 0, attendance: 0 });
 
   const saveTimer = useRef<number | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -485,18 +525,39 @@ export default function App() {
     else window.localStorage.removeItem('daily_current_staff');
   }, [staffName]);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem('daily_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const onOnline = async () => {
+      const flushed = await flushQueue();
+      setPendingSync(0);
+      if (flushed > 0) showToast(`Back online — ${flushed} pending update${flushed > 1 ? 's' : ''} synced.`);
+    };
+    const onOffline = () => showToast('You are offline — changes will sync automatically.');
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const dates = useMemo(() => Array.from({ length: 14 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - i); return formatKey(d); }), []);
   const progress = (rec: DayRecord, s: Shift) => {
     const total = checklists[s].length;
-    const done = Object.values(rec[s]).filter(l => l.done).length;
-    return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
+    const done = Object.values(rec?.[s] ?? {}).filter(l => l?.done).length;
+    return { done, total, pct: total ? Math.min(100, Math.round((done / total) * 100)) : 0 };
   };
   const openP = progress(todayRecord, 'opening');
   const closeP = progress(todayRecord, 'closing');
   const lookup = useMemo(() => { const m = new Map<string, TaskDef>(); [...checklists.opening, ...checklists.closing].forEach(t => m.set(t.id, t)); return m; }, [checklists]);
   const activityFor = (rec: DayRecord) => {
     const ev: ActivityEvent[] = [];
-    (['opening', 'closing'] as Shift[]).forEach(s => Object.entries(rec[s]).forEach(([id, log]) => { const t = lookup.get(id); if (t && log.done) ev.push({ shift: s, task: t, log }); }));
+    (['opening', 'closing'] as Shift[]).forEach(s => Object.entries(rec?.[s] ?? {}).forEach(([id, log]) => { const t = lookup.get(id); if (t && log?.done) ev.push({ shift: s, task: t, log }); }));
     return ev.sort((a, b) => new Date(b.log.ts).getTime() - new Date(a.log.ts).getTime());
   };
   const todayActivity = useMemo(() => activityFor(todayRecord), [todayRecord, lookup]);
@@ -505,16 +566,31 @@ export default function App() {
   const showToast = (m: string) => { setToast(m); window.setTimeout(() => setToast(''), 3000); };
   const cloudOn = cloudStatus === 'connected';
 
+  const sendToCloud = (path: 'records' | 'attendance', value: unknown) => {
+    if (!cloudOn || !navigator.onLine) { enqueueWrite(path, value); setPendingSync(1); return; }
+    void writeCloud(path, value).then(ok => {
+      if (!ok) {
+        enqueueWrite(path, value);
+        setPendingSync(1);
+        showToast('Saved on this device — will sync when back online.');
+      } else {
+        setPendingSync(0);
+      }
+    });
+  };
+
   const persist = (next: Records) => {
     setRecords(next);
     void sharedSet(RECORDS_KEY, next);
+    lastLocalWrite.current.records = Date.now();
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => { if (cloudOn) writeCloud('records', next); }, 250);
+    saveTimer.current = window.setTimeout(() => sendToCloud('records', next), 250);
   };
   const persistAttendance = (next: AttendanceRecord[]) => {
     setAttendance(next);
     void sharedSet(ATTENDANCE_KEY, next);
-    if (cloudOn) writeCloud('attendance', next);
+    lastLocalWrite.current.attendance = Date.now();
+    sendToCloud('attendance', next);
   };
 
   const saveAdmin = async (path: 'checklists' | 'users' | 'auditLogs', value: unknown) => {
@@ -530,17 +606,19 @@ export default function App() {
     cloudUnsub.current();
     migratedRef.current = false;
     cloudUnsub.current = subscribeCloud(data => {
+      const fresh = (p: 'records' | 'attendance') => Date.now() - lastLocalWrite.current[p] < 3000;
       if (data.records && typeof data.records === 'object') {
         const pruned: Records = {};
         Object.entries(data.records as Records).forEach(([d, r]) => { if (isWithinHistory(d)) pruned[d] = r; });
         window.localStorage.setItem(RECORDS_KEY, JSON.stringify(pruned));
-        setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
+        // skip the echo of our own recent write — keeps optimistic ticks snappy
+        if (!fresh('records')) setRecords(cur => (JSON.stringify(cur) === JSON.stringify(pruned) ? cur : pruned));
       } else if (!migratedRef.current) {
         try { const raw = window.localStorage.getItem(RECORDS_KEY); if (raw) writeCloud('records', JSON.parse(raw)); } catch { /* ignore */ }
       }
       if (Array.isArray(data.attendance)) {
         window.localStorage.setItem(ATTENDANCE_KEY, JSON.stringify(data.attendance));
-        setAttendance(cur => (JSON.stringify(cur) === JSON.stringify(data.attendance) ? cur : data.attendance as AttendanceRecord[]));
+        if (!fresh('attendance')) setAttendance(cur => (JSON.stringify(cur) === JSON.stringify(data.attendance) ? cur : data.attendance as AttendanceRecord[]));
       } else if (!migratedRef.current) {
         try { const raw = window.localStorage.getItem(ATTENDANCE_KEY); if (raw) writeCloud('attendance', JSON.parse(raw)); } catch { /* ignore */ }
       }
@@ -578,7 +656,7 @@ export default function App() {
     else {
       logs[taskId] = { done: true, staff: staffName.trim(), ts: new Date().toISOString() };
       setJustChecked(taskId); window.setTimeout(() => setJustChecked(null), 600);
-      if (navigator.vibrate) navigator.vibrate(12);
+      haptic([10, 40, 14]);
     }
     const next: Records = { ...records, [todayKey]: { ...rec, [shift]: logs } };
     const pruned: Records = {}; Object.entries(next).forEach(([d, v]) => { if (isWithinHistory(d)) pruned[d] = v; });
@@ -587,15 +665,42 @@ export default function App() {
 
   const tryAdmin = () => { if (adminUnlocked) setView('admin'); else setShowGate(true); };
   const unlock = async () => {
-    const code = gateCode;
+    const code = gateCode.trim();
     const ok = await verifyAdminCode(code);
     if (ok) {
       adminCodeRef.current = code;
       setAdminUnlocked(true); setShowGate(false); setGateCode(''); setGateError(''); setView('admin');
+      haptic([12, 40, 18]);
       showToast('Admin unlocked for this session.');
     } else {
       setGateError('Wrong code. Ask the owner for access.');
+      haptic(80);
     }
+  };
+
+  // ---------- staff sign-in with optional per-person PIN ----------
+  const finishSignIn = (name: string) => {
+    setStaffName(name);
+    setNameOpen(false);
+    setPendingPinUser(null);
+    setPinInput('');
+    setPinError('');
+    haptic([10, 30, 10]);
+    showToast(`Signed in as ${name}`);
+  };
+  const requestSignIn = (member: StaffMember | null, typedName: string) => {
+    const name = member?.name ?? typedName.trim();
+    if (!name) return;
+    if (member?.pin) { setPendingPinUser(member); setPinInput(''); setPinError(''); return; }
+    // typed name matching a roster member who has a PIN still requires it
+    const match = users.find(u => u.name.toLowerCase() === name.toLowerCase());
+    if (match?.pin) { setPendingPinUser(match); setPinInput(''); setPinError(''); return; }
+    finishSignIn(name);
+  };
+  const confirmPin = () => {
+    if (!pendingPinUser) return;
+    if (pendingPinUser.pin === pinInput.trim()) finishSignIn(pendingPinUser.name);
+    else { setPinError('Wrong PIN — try again.'); setPinInput(''); haptic(70); }
   };
 
   // ==========================================
@@ -620,7 +725,11 @@ export default function App() {
     }
 
     const checkInTime = new Date();
-    const status: AttendanceStatus = 'On Time';
+    const [sh, sm] = member.shiftStart.split(':').map(Number);
+    const shiftStart = new Date(checkInTime);
+    shiftStart.setHours(sh || 0, sm || 0, 0, 0);
+    const graceCutoff = new Date(shiftStart.getTime() + (member.gracePeriod || 0) * 60000);
+    const status: AttendanceStatus = checkInTime > graceCutoff ? 'Late' : 'On Time';
 
     const newRecord: AttendanceRecord = {
       id: `att-${Date.now()}`,
@@ -635,6 +744,7 @@ export default function App() {
     };
 
     persistAttendance([...attendance, newRecord]);
+    haptic([14, 60, 14]);
     triggerNotification(`${member.name} checked in at ${checkInTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`);
     showToast(`Welcome, ${member.name}! Checked in successfully.`);
   };
@@ -659,10 +769,11 @@ export default function App() {
     const inTime = new Date(existing.checkInTime);
     const workingHours = Math.round(((checkOutTime.getTime() - inTime.getTime()) / (1000 * 60 * 60)) * 100) / 100;
 
-    const nextStatus: AttendanceStatus = 'Checked Out';
+    const nextStatus: AttendanceStatus = existing.status === 'On Time' ? 'Checked Out' : existing.status;
 
     const updated = attendance.map(a => a.id === existing.id ? { ...a, checkOutTime: checkOutTime.toISOString(), workingHours, status: nextStatus } : a);
     persistAttendance(updated);
+    haptic([14, 60, 14]);
     triggerNotification(`${member.name} checked out at ${checkOutTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Total: ${workingHours} hrs.`);
     showToast(`Goodbye, ${member.name}! Checked out successfully. Total hours: ${workingHours}`);
   };
@@ -677,6 +788,18 @@ export default function App() {
   // ==========================================
   // STAFF ROSTER CRUD
   // ==========================================
+  const resetStaffForm = () => {
+    setNewStaffName('');
+    setNewStaffRole('Staff');
+    setNewStaffShiftStart('08:00');
+    setNewStaffShiftEnd('16:00');
+    setNewStaffGrace(5);
+    setNewStaffDaysOff([0]);
+    setNewStaffPhoto('');
+    setNewStaffPin('');
+    setEditingStaffId(null);
+  };
+
   const addStaff = () => {
     const name = newStaffName.trim();
     if (!name) return;
@@ -691,12 +814,13 @@ export default function App() {
       gracePeriod: newStaffGrace,
       weeklyDaysOff: newStaffDaysOff,
       active: true,
-      profilePhoto: newStaffPhoto
+      profilePhoto: newStaffPhoto,
+      pin: newStaffPin.trim().length >= 4 ? newStaffPin.trim() : undefined
     };
 
     persistUsers([...users, nextMember]);
-    setNewStaffName('');
-    setNewStaffPhoto('');
+    resetStaffForm();
+    haptic(14);
     showToast(`${name} added with role ${newStaffRole}.`);
   };
 
@@ -708,9 +832,11 @@ export default function App() {
       shiftEnd: newStaffShiftEnd,
       gracePeriod: newStaffGrace,
       weeklyDaysOff: newStaffDaysOff,
-      profilePhoto: newStaffPhoto
+      profilePhoto: newStaffPhoto,
+      pin: newStaffPin.trim().length >= 4 ? newStaffPin.trim() : undefined
     } : u));
-    setEditingStaffId(null);
+    resetStaffForm();
+    haptic(14);
     showToast('Staff details updated.');
   };
 
@@ -718,6 +844,7 @@ export default function App() {
     const target = users.find(u => u.id === id);
     if (!target) return;
     persistUsers(users.map(u => u.id === id ? { ...u, active: !u.active } : u));
+    haptic(14);
     showToast(`${target.name} ${target.active ? 'deactivated' : 'reactivated'}.`);
   };
 
@@ -730,6 +857,7 @@ export default function App() {
     setNewStaffGrace(u.gracePeriod ?? 5);
     setNewStaffDaysOff(Array.isArray(u.weeklyDaysOff) ? u.weeklyDaysOff : [0]);
     setNewStaffPhoto(u.profilePhoto ?? '');
+    setNewStaffPin(u.pin ?? '');
   };
 
   // ==========================================
@@ -746,9 +874,17 @@ export default function App() {
     showToast('Task added.');
   };
   const removeTask = (s: Shift, id: string) => {
-    if (!adminUnlocked || !window.confirm('Remove this task from the shared list?')) return;
-    setChecklists(cur => { const next = { ...cur, [s]: cur[s].filter(t => t.id !== id) }; void saveAdmin('checklists', next); return next; });
-    showToast('Task removed.');
+    if (!adminUnlocked) return;
+    setConfirmSpec({
+      title: 'Remove task',
+      body: 'This task will be removed from the shared list on every device.',
+      confirmLabel: 'Remove',
+      danger: true,
+      onConfirm: () => {
+        setChecklists(cur => { const next = { ...cur, [s]: cur[s].filter(t => t.id !== id) }; void saveAdmin('checklists', next); return next; });
+        showToast('Task removed.');
+      },
+    });
   };
 
   const changeCode = async () => {
@@ -775,7 +911,7 @@ export default function App() {
         rows.push([date, s === 'opening' ? 'Opening' : 'Closing', t.label, t.detail, log?.done ? 'Yes' : 'No', log?.staff ?? '', log?.ts ?? '', log?.ts ? new Date(log.ts).toLocaleString() : '']);
       }));
     });
-    const csv = rows.map(r => r.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\n');
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a'); a.href = url; a.download = `daily-check_${exportFrom}_to_${exportTo}.csv`; a.click();
     URL.revokeObjectURL(url); showToast('CSV download started.');
@@ -793,7 +929,7 @@ export default function App() {
         a.createdAt
       ]);
     });
-    const csv = rows.map(r => r.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\n');
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a'); a.href = url; a.download = `attendance_log.csv`; a.click();
     URL.revokeObjectURL(url); showToast('Attendance CSV download started.');
@@ -816,16 +952,11 @@ export default function App() {
     const avgHours = workingHours.length ? Math.round((workingHours.reduce((sum, h) => sum + h, 0) / workingHours.length) * 10) / 10 : 0;
 
     const presentStaffIds = active.map(a => a.staffId);
-    const absentStaff = users.filter(u => u.active && !presentStaffIds.includes(u.id));
+    const dayOfWeek = parseKey(attendanceFilterDate).getDay();
+    const absentStaff = users.filter(u => u.active && !u.weeklyDaysOff.includes(dayOfWeek) && !presentStaffIds.includes(u.id));
 
     return { total, checkedInCount, lates, avgHours, absentCount: absentStaff.length, absentStaff };
-  }, [activeAttendanceForFilteredDate, users]);
-
-  useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-  }, []);
+  }, [activeAttendanceForFilteredDate, users, attendanceFilterDate]);
 
   if (loading) {
     return (
@@ -875,15 +1006,18 @@ export default function App() {
                   <p className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-amber-200/80">today's flow</p>
                   <span className="w-2 h-2 rounded-full bg-amber-300 pulse-soft shadow-[0_0_12px_rgba(228,192,120,0.9)]" />
                 </div>
-                {['Unlock and disarm', 'Power on equipment', 'Set up point of sale'].map((t, i) => (
-                  <div key={t} className="flex items-center gap-3 mt-5">
-                    <span className={`w-7 h-7 rounded-[9px] grid place-items-center ${i < 2 ? 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07]' : 'border border-white/25'}`}>{i < 2 && <Check width={14} height={14} strokeWidth={3.5} />}</span>
-                    <span className={`text-[14px] font-bold ${i < 2 ? 'line-through opacity-50' : ''}`}>{t}</span>
-                  </div>
-                ))}
+                {checklists.opening.slice(0, 3).map(t => {
+                  const done = Boolean(todayRecord.opening[t.id]?.done);
+                  return (
+                    <div key={t.id} className="flex items-center gap-3 mt-5">
+                      <span className={`w-7 h-7 rounded-[9px] grid place-items-center ${done ? 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07]' : 'border border-white/25'}`}>{done && <Check width={14} height={14} strokeWidth={3.5} />}</span>
+                      <span className={`text-[14px] font-bold ${done ? 'line-through opacity-50' : ''}`}>{t.label}</span>
+                    </div>
+                  );
+                })}
                 <div className="mt-6 pt-5 border-t border-white/10 flex items-center justify-between">
-                  <span className="text-[12px] font-bold text-white/70">2 of 10 done</span>
-                  <Ring pct={20} size={44} />
+                  <span className="text-[12px] font-bold text-white/70">{openP.done} of {openP.total} done</span>
+                  <Ring pct={openP.pct} size={44} />
                 </div>
               </div>
             </motion.div>
@@ -1180,7 +1314,9 @@ export default function App() {
               </div>
 
               <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-                {attendance.filter(a => a.createdAt === todayKey).length === 0 ? (
+                {attendance.filter(a => a.createdAt === todayKey).length === 0 && cloudStatus === 'checking' ? (
+                  <SkeletonRows rows={3} />
+                ) : attendance.filter(a => a.createdAt === todayKey).length === 0 ? (
                   <div className="text-center py-10 glass-soft rounded-[20px] border border-dashed border-white/15">
                     <Clock3 className="mx-auto text-white/50" width={22} height={22} />
                     <p className="mt-3 text-[13px] font-extrabold tracking-wide uppercase text-white/65">no check-ins today yet</p>
@@ -1230,6 +1366,7 @@ export default function App() {
         {([
           ['studio', 'Checklists', PencilLine],
           ['journal', 'Journal', CalendarDays],
+          ['insights', 'Insights', TrendingUp],
           ['export', 'Export & Audit', FileDown],
           ['settings', 'Staff & Rules', Settings],
           ['setup', 'Supabase Hub', Database],
@@ -1405,13 +1542,28 @@ export default function App() {
                         <option value="6">Saturday</option>
                       </select>
                     </label>
+
+                    <label className="text-[11.5px] font-extrabold uppercase tracking-wider text-white/60 grid gap-1.5">
+                      Personal PIN (optional)
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={12}
+                        value={newStaffPin}
+                        onChange={e => setNewStaffPin(e.target.value)}
+                        placeholder="4+ digits"
+                        autoComplete="off"
+                        className="glass-input"
+                      />
+                    </label>
                   </div>
+                  <p className="text-[11px] font-bold text-white/45 -mt-2">With a PIN set, this person must enter it after picking their name — keeps attendance honest.</p>
 
                   <div className="flex gap-2.5 justify-end pt-2">
                     {editingStaffId ? (
                       <>
                         <button
-                          onClick={() => { setEditingStaffId(null); setNewStaffName(''); }}
+                          onClick={resetStaffForm}
                           className="pill text-[12px] !py-2 !px-4"
                         >
                           Cancel
@@ -1434,7 +1586,7 @@ export default function App() {
                       <div className="flex items-center gap-3 min-w-0">
                         <Avatar name={u.name} size={36} />
                         <div className="min-w-0">
-                          <p className="text-[14px] font-extrabold truncate">{u.name} {!u.active && <span className="text-[10px] font-extrabold uppercase tracking-wider text-rose-300/80 ml-1">inactive</span>}</p>
+                          <p className="text-[14px] font-extrabold truncate">{u.name} {!u.active && <span className="text-[10px] font-extrabold uppercase tracking-wider text-rose-300/80 ml-1">inactive</span>}{u.pin && <span className="inline-flex align-middle ml-1.5 text-amber-200/80" title="PIN protected"><Lock width={11} height={11} /></span>}</p>
                           <p className="text-[11px] font-bold text-white/55 mt-1 tabular-nums">
                             {u.role} · Shift: {u.shiftStart} - {u.shiftEnd}
                           </p>
@@ -1496,32 +1648,32 @@ export default function App() {
                   </p>
                   <div className="grid grid-cols-2 gap-3 mt-5">
                     <button
-                      onClick={() => {
-                        if (window.confirm("ARE YOU SURE?\n\nThis will irreversibly delete ALL checklist signature records in the system. Checklists and team roster will not be deleted.\n\nType 'DELETE ALL' in the next prompt to confirm.")) {
-                          const check = window.prompt("Type 'DELETE ALL' to confirm:");
-                          if (check === 'DELETE ALL') {
-                            persist({});
-                            showToast('All signature records cleared.');
-                          } else {
-                            showToast('Wipe cancelled. Code did not match.');
-                          }
-                        }
-                      }}
+                      onClick={() => setConfirmSpec({
+                        title: 'Delete all history',
+                        body: 'This will irreversibly delete ALL checklist signature records in the system. Checklists and the team roster will not be deleted.',
+                        confirmLabel: 'Delete everything',
+                        danger: true,
+                        typedPhrase: 'DELETE ALL',
+                        onConfirm: () => { persist({}); haptic([20, 60, 20]); showToast('All signature records cleared.'); },
+                      })}
                       className="pill text-[12px] !border-rose-500/30 text-rose-300 hover:bg-rose-500/10 justify-center"
                     >
                       Delete all history
                     </button>
                     <button
-                      onClick={() => {
-                        if (window.confirm(`ARE YOU SURE?\n\nThis will irreversibly delete all checklist signatures from previous days, keeping ONLY today's signatures (${todayKey}).\n\nConfirm to proceed.`)) {
+                      onClick={() => setConfirmSpec({
+                        title: 'Clear past, keep today',
+                        body: `This will irreversibly delete all checklist signatures from previous days, keeping ONLY today's signatures (${todayKey}).`,
+                        confirmLabel: 'Clear history',
+                        danger: true,
+                        onConfirm: () => {
                           const todayOnly: Records = {};
-                          if (records[todayKey]) {
-                            todayOnly[todayKey] = records[todayKey];
-                          }
+                          if (records[todayKey]) todayOnly[todayKey] = records[todayKey];
                           persist(todayOnly);
+                          haptic([20, 60, 20]);
                           showToast("All historical data cleared except today's.");
-                        }
-                      }}
+                        },
+                      })}
                       className="pill text-[12px] !border-rose-500/30 text-rose-300 hover:bg-rose-500/10 justify-center"
                     >
                       Clear past, keep today
@@ -1531,6 +1683,96 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {adminPane === 'insights' && (() => {
+            const dayStats = dates.map(d => {
+              const r = records[d] || emptyDay(d);
+              const o = progress(r, 'opening'); const c = progress(r, 'closing');
+              const total = o.total + c.total;
+              const done = o.done + c.done;
+              return { date: d, pct: total ? Math.round((done / total) * 100) : 0, done, signatures: Object.values(r.opening).filter(l => l?.done).length + Object.values(r.closing).filter(l => l?.done).length };
+            }).reverse();
+            const activeDays = dayStats.filter(s => s.signatures > 0);
+            const avgPct = activeDays.length ? Math.round(activeDays.reduce((sum, s) => sum + s.pct, 0) / activeDays.length) : 0;
+            const best = [...dayStats].sort((a, b) => b.pct - a.pct)[0];
+            let streak = 0;
+            for (let i = dayStats.length - 1; i >= 0; i--) { if (dayStats[i].signatures > 0) streak += 1; else break; }
+            const byStaff = new Map<string, number>();
+            Object.values(records).forEach(r => { Object.values(r.opening).concat(Object.values(r.closing)).forEach(l => { if (l?.done) byStaff.set(l.staff, (byStaff.get(l.staff) ?? 0) + 1); }); });
+            const leaderboard = [...byStaff.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+            const maxSigs = leaderboard[0]?.[1] ?? 1;
+            const recentAtt = attendance.filter(a => a.createdAt >= dates[dates.length - 1]);
+            const lateCount = recentAtt.filter(a => a.status === 'Late').length;
+            const totalHours = Math.round(recentAtt.reduce((sum, a) => sum + (a.workingHours ?? 0), 0) * 10) / 10;
+            return (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {[
+                    { label: 'Active days', val: String(activeDays.length), sub: `of last ${dates.length}`, accent: '#e4c078' },
+                    { label: 'Current streak', val: `${streak}d`, sub: 'days in a row', accent: '#fb7185' },
+                    { label: 'Avg completion', val: `${avgPct}%`, sub: 'on active days', accent: '#34d399' },
+                    { label: 'Best day', val: best && best.signatures ? `${best.pct}%` : '—', sub: best?.signatures ? parseKey(best.date).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'no data yet', accent: '#8b7cf7' },
+                  ].map((stat, i) => (
+                    <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06, duration: 0.5, ease: EASE }} className="glass stat-card rounded-[22px] p-5 relative overflow-hidden" style={{ ['--accent' as string]: stat.accent }}>
+                      <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-white/55">{stat.label}</p>
+                      <p className="text-[32px] font-extrabold leading-none mt-2 tabular-nums">{stat.val}</p>
+                      <p className="text-[11px] font-semibold text-white/50 mt-1.5 truncate">{stat.sub}</p>
+                    </motion.div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-12 lg:col-span-7 glass rounded-[24px] p-6">
+                    <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-white/60">Completion · last 14 days</p>
+                    <div className="flex items-end gap-1.5 h-[140px] mt-6">
+                      {dayStats.map(s => (
+                        <div key={s.date} className="flex-1 flex flex-col items-center gap-2 group" title={`${parseKey(s.date).toLocaleDateString([], { month: 'short', day: 'numeric' })} — ${s.pct}%`}>
+                          <motion.div
+                            className={`w-full rounded-t-[6px] min-h-[3px] ${s.pct >= 90 ? 'bg-gradient-to-t from-emerald-500/70 to-emerald-300' : s.pct >= 50 ? 'bg-gradient-to-t from-amber-500/70 to-amber-300' : 'bg-white/15'}`}
+                            initial={{ height: 0 }} animate={{ height: `${Math.max(s.pct, 3)}%` }} transition={{ duration: 0.7, ease: EASE }}
+                          />
+                          <span className="text-[9px] font-bold text-white/40 tabular-nums">{parseKey(s.date).getDate()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="col-span-12 lg:col-span-5 glass rounded-[24px] p-6">
+                    <div className="flex items-center gap-2">
+                      <Flame width={15} height={15} className="text-amber-300" />
+                      <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-white/60">Top signers</p>
+                    </div>
+                    <div className="space-y-3 mt-5">
+                      {leaderboard.length === 0 ? (
+                        <p className="text-[13px] font-semibold text-white/50">No signatures yet — the board fills this in.</p>
+                      ) : leaderboard.map(([name, count], i) => (
+                        <div key={name} className="flex items-center gap-3">
+                          <span className="text-[12px] font-extrabold text-white/45 tabular-nums w-4">{i + 1}</span>
+                          <Avatar name={name} size={28} />
+                          <span className="text-[13px] font-extrabold flex-1 truncate">{name}</span>
+                          <span className="w-24 h-2 rounded-full bg-white/10 overflow-hidden shrink-0"><motion.i className="block h-full rounded-full bg-gradient-to-r from-amber-200 to-amber-500" initial={{ width: 0 }} animate={{ width: `${(count / maxSigs) * 100}%` }} transition={{ duration: 0.8, ease: EASE }} style={{ display: 'block' }} /></span>
+                          <span className="text-[12px] font-extrabold text-amber-200 tabular-nums w-7 text-right">{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div className="glass rounded-[22px] p-5">
+                    <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/55">Lates · last 14 days</p>
+                    <p className="text-[30px] font-extrabold leading-none mt-2 tabular-nums">{lateCount}</p>
+                    <p className="text-[11px] font-semibold text-white/50 mt-1">{recentAtt.length} check-ins recorded</p>
+                  </div>
+                  <div className="glass rounded-[22px] p-5">
+                    <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-white/55">Hours worked · last 14 days</p>
+                    <p className="text-[30px] font-extrabold leading-none mt-2 tabular-nums">{totalHours}</p>
+                    <p className="text-[11px] font-semibold text-white/50 mt-1">across completed shifts</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {adminPane === 'setup' && (
             <div className="space-y-6">
@@ -1602,12 +1844,12 @@ export default function App() {
 
   const viewContent = (() => {
     switch (view) {
-      case 'home': return <HomeView />;
-      case 'opening': return <ShiftView shift="opening" />;
-      case 'closing': return <ShiftView shift="closing" />;
-      case 'attendance': return <AttendanceView />;
-      case 'history': return <HistoryView />;
-      case 'admin': return adminUnlocked ? <AdminView /> : null;
+      case 'home': return HomeView();
+      case 'opening': return ShiftView({ shift: 'opening' });
+      case 'closing': return ShiftView({ shift: 'closing' });
+      case 'attendance': return AttendanceView();
+      case 'history': return HistoryView();
+      case 'admin': return adminUnlocked ? AdminView() : null;
       default: return null;
     }
   })();
@@ -1647,17 +1889,37 @@ export default function App() {
 
           <div className="flex items-center gap-2.5 ml-auto md:ml-0 relative">
             <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => { setTheme(t => (t === 'dark' ? 'light' : 'dark')); haptic(10); }}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              className="w-11 h-11 rounded-full grid place-items-center bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors"
+            >
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.span
+                  key={theme}
+                  initial={{ rotate: -90, opacity: 0, scale: 0.6 }}
+                  animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                  exit={{ rotate: 90, opacity: 0, scale: 0.6 }}
+                  transition={{ duration: 0.3, ease: EASE }}
+                  className="grid place-items-center"
+                >
+                  {theme === 'dark' ? <Sun width={16} height={16} /> : <Moon width={16} height={16} />}
+                </motion.span>
+              </AnimatePresence>
+            </motion.button>
+            <motion.button
               whileTap={{ scale: 0.94 }}
               onClick={retryCloud}
               aria-label="Cloud sync status — tap to retry"
               title={cloudOn ? 'Cloud sync connected' : cloudStatus === 'checking' ? 'Checking cloud…' : 'Offline — tap to retry'}
-              className="hidden sm:flex h-11 items-center gap-2 rounded-full bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors px-4"
+              className={`hidden sm:flex h-11 items-center gap-2 rounded-full border transition-colors px-4 ${pendingSync > 0 ? 'bg-amber-300/10 border-amber-300/30' : 'bg-white/[0.04] border-white/15 hover:bg-white/10'}`}
             >
               <span
-                className={`w-2 h-2 rounded-full ${cloudOn ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]' : cloudStatus === 'checking' ? 'bg-amber-300 pulse-soft' : 'bg-rose-400'}`}
+                className={`w-2 h-2 rounded-full ${cloudOn && pendingSync === 0 ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]' : cloudStatus === 'checking' ? 'bg-amber-300 pulse-soft' : pendingSync > 0 ? 'bg-amber-300 pulse-soft' : 'bg-rose-400'}`}
               />
               <span className="text-[11px] font-extrabold uppercase tracking-[0.12em] text-white/70">
-                {cloudOn ? 'synced' : cloudStatus === 'checking' ? 'syncing' : 'local'}
+                {pendingSync > 0 ? `${pendingSync} queued` : cloudOn ? 'synced' : cloudStatus === 'checking' ? 'syncing' : 'local'}
               </span>
             </motion.button>
             <motion.button whileTap={{ scale: 0.92 }} onClick={tryAdmin} aria-label="Admin" className={`w-11 h-11 rounded-full grid place-items-center border transition-colors ${view === 'admin' ? 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07] border-transparent' : 'bg-white/[0.04] border-white/15 hover:bg-white/10'}`}>
@@ -1681,42 +1943,71 @@ export default function App() {
                     style={{ transformOrigin: 'top right' }}
                   >
                     <div className="flex items-center justify-between">
-                      <p className="text-[12px] font-extrabold uppercase tracking-[0.16em] text-amber-200/80">Who's on it?</p>
-                      <button onClick={() => setNameOpen(false)} aria-label="Close" className="w-7 h-7 rounded-full bg-white/10 grid place-items-center hover:bg-white/25 transition-colors"><X width={13} height={13} /></button>
+                      <p className="text-[12px] font-extrabold uppercase tracking-[0.16em] text-amber-200/80">{pendingPinUser ? 'Enter your PIN' : "Who's on it?"}</p>
+                      <button onClick={() => { setNameOpen(false); setPendingPinUser(null); }} aria-label="Close" className="w-7 h-7 rounded-full bg-white/10 grid place-items-center hover:bg-white/25 transition-colors"><X width={13} height={13} /></button>
                     </div>
 
-                    {users.length > 0 && (
-                      <motion.div variants={staggerParent} initial="hidden" animate="show" className="grid grid-cols-2 gap-2 mt-4">
-                        {users.map(u => (
-                          <motion.button
-                            variants={riseItem}
-                            key={u.id}
-                            onClick={() => { setStaffName(u.name); setNameOpen(false); showToast(`Signed in as ${u.name}`); }}
-                            className={`flex items-center gap-2 rounded-[14px] px-2.5 py-2 text-left transition-colors ${staffName.toLowerCase() === u.name.toLowerCase() ? 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07]' : 'bg-white/[0.06] hover:bg-white/15'}`}
-                          >
-                            <Avatar name={u.name} size={26} />
-                            <span className="text-[13px] font-extrabold truncate">{u.name}</span>
-                          </motion.button>
-                        ))}
-                      </motion.div>
+                    {pendingPinUser ? (
+                      <div className="mt-4">
+                        <div className="flex items-center gap-3 glass-soft rounded-[14px] px-4 py-3">
+                          <Avatar name={pendingPinUser.name} size={30} />
+                          <span className="text-[14px] font-extrabold">{pendingPinUser.name}</span>
+                        </div>
+                        <input
+                          autoFocus
+                          type="password"
+                          inputMode="numeric"
+                          value={pinInput}
+                          onChange={e => { setPinInput(e.target.value); setPinError(''); }}
+                          onKeyDown={e => { if (e.key === 'Enter') confirmPin(); }}
+                          placeholder="4+ digit PIN"
+                          aria-label="Your PIN"
+                          maxLength={12}
+                          className="glass-input mt-3 text-center tracking-[0.5em]"
+                        />
+                        {pinError && <p className="text-[11px] font-extrabold mt-2 text-rose-300">{pinError}</p>}
+                        <button onClick={confirmPin} disabled={!pinInput.trim()} className="btn-ivory w-full justify-center mt-3 !py-2.5 text-[13px] disabled:opacity-40">Unlock</button>
+                        <button onClick={() => setPendingPinUser(null)} className="w-full text-center text-[11px] font-bold text-white/55 hover:text-white mt-3 transition-colors">Back to roster</button>
+                      </div>
+                    ) : (
+                      <>
+                        {users.length > 0 && (
+                          <motion.div variants={staggerParent} initial="hidden" animate="show" className="grid grid-cols-2 gap-2 mt-4">
+                            {users.map(u => (
+                              <motion.button
+                                variants={riseItem}
+                                key={u.id}
+                                onClick={() => requestSignIn(u, '')}
+                                className={`relative flex items-center gap-2 rounded-[14px] px-2.5 py-2 text-left transition-colors ${staffName.toLowerCase() === u.name.toLowerCase() ? 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07]' : 'bg-white/[0.06] hover:bg-white/15'}`}
+                              >
+                                <Avatar name={u.name} size={26} />
+                                <span className="text-[13px] font-extrabold truncate">{u.name}</span>
+                                {u.pin && (
+                                  <span className={`absolute top-1 right-1.5 ${staffName.toLowerCase() === u.name.toLowerCase() ? 'text-[#241a07]/70' : 'text-white/45'}`} title="PIN protected"><Lock width={10} height={10} /></span>
+                                )}
+                              </motion.button>
+                            ))}
+                          </motion.div>
+                        )}
+
+                        <div className={`mt-4 ${users.length ? 'pt-4 border-t border-white/10' : ''}`}>
+                          <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-white/50 mb-2">{users.length ? 'or type a name' : 'type your name'}</p>
+                          <input
+                            ref={nameRef}
+                            value={nameInput}
+                            onChange={e => setNameInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') requestSignIn(users.find(u => u.name.toLowerCase() === nameInput.trim().toLowerCase()) ?? null, nameInput); }}
+                            placeholder="Your name"
+                            aria-label="Your name"
+                            className="glass-input"
+                          />
+                          {users.length > 0 && nameInput.trim() && !onRoster(nameInput) && (
+                            <p className="text-[10px] font-bold text-amber-200/90 mt-2">Not on the roster — an admin can add you in Settings.</p>
+                          )}
+                          <button onClick={() => requestSignIn(users.find(u => u.name.toLowerCase() === nameInput.trim().toLowerCase()) ?? null, nameInput)} disabled={!nameInput.trim()} className="btn-ivory w-full justify-center mt-3 !py-2.5 text-[13px] disabled:opacity-40">Sign in</button>
+                        </div>
+                      </>
                     )}
-
-                    <div className={`mt-4 ${users.length ? 'pt-4 border-t border-white/10' : ''}`}>
-                      <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-white/50 mb-2">{users.length ? 'or type a name' : 'type your name'}</p>
-                      <input
-                        ref={nameRef}
-                        value={nameInput}
-                        onChange={e => setNameInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') { setStaffName(nameInput.trim()); setNameOpen(false); } }}
-                        placeholder="Your name"
-                        aria-label="Your name"
-                        className="glass-input"
-                      />
-                      {users.length > 0 && nameInput.trim() && !onRoster(nameInput) && (
-                        <p className="text-[10px] font-bold text-amber-200/90 mt-2">Not on the roster — an admin can add you in Settings.</p>
-                      )}
-                      <button onClick={() => { if (nameInput.trim()) { setStaffName(nameInput.trim()); setNameOpen(false); } }} className="btn-ivory w-full justify-center mt-3 !py-2.5 text-[13px]">Sign in</button>
-                    </div>
                   </motion.div>
                 </>
               )}
@@ -1797,6 +2088,61 @@ export default function App() {
               />
               {gateError && <p className="text-[12px] font-extrabold mt-3 text-rose-300">{gateError}</p>}
               <button onClick={unlock} className="pill-solid w-full justify-center mt-6">Unlock <ArrowRight width={16} height={16} /></button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmSpec && (
+          <motion.div
+            className="modal-veil"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            onClick={() => { setConfirmSpec(null); setConfirmTyped(''); }}
+          >
+            <motion.div
+              className="glass-deep rounded-[28px] p-8 w-full max-w-[420px]"
+              initial={{ opacity: 0, y: 34, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.96 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 27 }}
+              onClick={e => e.stopPropagation()}
+              role="alertdialog"
+              aria-modal="true"
+              aria-label={confirmSpec.title}
+            >
+              <div className="flex items-start justify-between">
+                <span className={`w-12 h-12 rounded-full grid place-items-center ${confirmSpec.danger ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30' : 'bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07]'}`}><AlertCircle width={19} height={19} /></span>
+                <button onClick={() => { setConfirmSpec(null); setConfirmTyped(''); }} aria-label="Close" className="w-8 h-8 rounded-full bg-white/10 grid place-items-center hover:bg-white/25 transition-colors"><X width={14} height={14} /></button>
+              </div>
+              <h3 className={`text-[26px] font-extrabold tracking-tight mt-5 ${confirmSpec.danger ? 'text-rose-200' : ''}`}>{confirmSpec.title}</h3>
+              <p className="text-[13px] font-semibold text-white/65 mt-2 leading-relaxed">{confirmSpec.body}</p>
+              {confirmSpec.typedPhrase && (
+                <input
+                  autoFocus
+                  value={confirmTyped}
+                  onChange={e => setConfirmTyped(e.target.value)}
+                  placeholder={`Type "${confirmSpec.typedPhrase}"`}
+                  aria-label={`Type ${confirmSpec.typedPhrase} to confirm`}
+                  className="glass-input mt-5"
+                />
+              )}
+              <div className="flex gap-3 mt-6">
+                <button onClick={() => { setConfirmSpec(null); setConfirmTyped(''); }} className="pill flex-1 justify-center">Cancel</button>
+                <button
+                  onClick={() => {
+                    if (confirmSpec.typedPhrase && confirmTyped.trim().toUpperCase() !== confirmSpec.typedPhrase) return;
+                    const fn = confirmSpec.onConfirm;
+                    setConfirmSpec(null); setConfirmTyped('');
+                    fn();
+                  }}
+                  disabled={Boolean(confirmSpec.typedPhrase) && confirmTyped.trim().toUpperCase() !== confirmSpec.typedPhrase}
+                  className={confirmSpec.danger ? 'pill flex-1 justify-center !border-rose-500/40 text-rose-200 hover:!bg-rose-500/15 disabled:opacity-35' : 'pill-solid flex-1 justify-center'}
+                >
+                  {confirmSpec.confirmLabel}
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

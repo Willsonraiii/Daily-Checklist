@@ -21,6 +21,7 @@
   /* text */
   --ivory: #f5f2ea;
   --ink: #14121c;
+  --ring-label: #f5f2ea;
 
   color: var(--ivory);
   font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
@@ -377,7 +378,7 @@ input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: inve
   right: 12px;
   bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   z-index: 50;
-  display: flex;
+  display: none;
   justify-content: space-around;
   align-items: center;
   gap: 2px;
@@ -390,6 +391,8 @@ input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: inve
 
 @media (max-width: 767px) {
   body { padding-bottom: 84px; }
+  /* unlayered rules beat Tailwind's md:hidden, so scope visibility here instead */
+  .mobile-dock { display: flex; }
 }
 
 /* progress ring */
@@ -422,3 +425,135 @@ input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: inve
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- skeleton loaders ---------- */
+.skeleton {
+  background: linear-gradient(100deg, rgba(255,255,255,0.05) 35%, rgba(255,255,255,0.12) 50%, rgba(255,255,255,0.05) 65%);
+  background-size: 220% 100%;
+  animation: shimmer-bg 1.6s linear infinite;
+}
+@keyframes shimmer-bg { from { background-position: 130% 0; } to { background-position: -90% 0; } }
+
+/* ============================================================
+   LIGHT THEME · warm parchment
+   ============================================================ */
+html[data-theme="light"] {
+  --ring-label: #14121c;
+  color-scheme: light;
+}
+html[data-theme="light"] body { background: #f2ede3; }
+html[data-theme="light"] .stage {
+  background:
+    radial-gradient(1100px 600px at 85% -12%, rgba(139, 124, 247, 0.12), transparent 62%),
+    radial-gradient(900px 520px at -10% 22%, rgba(79, 209, 197, 0.10), transparent 58%),
+    radial-gradient(1200px 700px at 55% 118%, rgba(201, 154, 69, 0.14), transparent 60%),
+    linear-gradient(168deg, #faf7f0 0%, #f2ede3 48%, #ece5d6 100%);
+}
+html[data-theme="light"] ::selection { background: var(--gold-3); color: #fff; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background-color: rgba(20,18,28,0.22); }
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background-color: rgba(20,18,28,0.38); }
+html[data-theme="light"] .orb { opacity: 0.4; }
+
+/* surfaces */
+html[data-theme="light"] .glass {
+  background: linear-gradient(165deg, rgba(255,255,255,0.75), rgba(255,255,255,0.45));
+  border-color: rgba(20,18,28,0.09);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 24px 60px -28px rgba(60,45,20,0.25);
+}
+html[data-theme="light"] .glass-soft {
+  background: rgba(255,255,255,0.55);
+  border-color: rgba(20,18,28,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
+}
+html[data-theme="light"] .glass-deep {
+  background: linear-gradient(170deg, rgba(255,255,255,0.92), rgba(250,247,240,0.94));
+  border-color: rgba(20,18,28,0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 40px 90px -34px rgba(60,45,20,0.30);
+}
+html[data-theme="light"] .toast {
+  background: rgba(255,255,255,0.95);
+  border-color: rgba(201,154,69,0.5);
+  box-shadow: 0 24px 60px -20px rgba(60,45,20,0.35);
+}
+html[data-theme="light"] .modal-veil { background: rgba(236,229,214,0.66); }
+
+/* text — remap the ivory-alpha utilities to ink-alpha */
+html[data-theme="light"] .text-white,
+html[data-theme="light"] .text-white\/85 { color: rgba(20,18,28,0.88); }
+html[data-theme="light"] .text-white\/75,
+html[data-theme="light"] .text-white\/70 { color: rgba(20,18,28,0.72); }
+html[data-theme="light"] .text-white\/65,
+html[data-theme="light"] .text-white\/60 { color: rgba(20,18,28,0.64); }
+html[data-theme="light"] .text-white\/55,
+html[data-theme="light"] .text-white\/50 { color: rgba(20,18,28,0.55); }
+html[data-theme="light"] .text-white\/45,
+html[data-theme="light"] .text-white\/40 { color: rgba(20,18,28,0.46); }
+html[data-theme="light"] .text-white\/35,
+html[data-theme="light"] .text-white\/25 { color: rgba(20,18,28,0.36); }
+
+/* borders & translucent fills */
+html[data-theme="light"] .border-white\/10,
+html[data-theme="light"] .border-white\/15 { border-color: rgba(20,18,28,0.14); }
+html[data-theme="light"] .border-white\/20,
+html[data-theme="light"] .border-white\/25 { border-color: rgba(20,18,28,0.22); }
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.05\],
+html[data-theme="light"] .bg-white\/\[0\.06\],
+html[data-theme="light"] .bg-white\/\[0\.07\],
+html[data-theme="light"] .bg-white\/10 { background-color: rgba(20,18,28,0.07); }
+html[data-theme="light"] .hover\:bg-white\/10:hover,
+html[data-theme="light"] .hover\:bg-white\/15:hover,
+html[data-theme="light"] .hover\:bg-white\/20:hover,
+html[data-theme="light"] .hover\:bg-white\/25:hover { background-color: rgba(20,18,28,0.13); }
+html[data-theme="light"] .hover\:border-white\/40:hover { border-color: rgba(20,18,28,0.32); }
+html[data-theme="light"] .bg-black\/30 { background-color: rgba(20,18,28,0.06); }
+html[data-theme="light"] .bg-black\/40 { background-color: rgba(20,18,28,0.82); }
+html[data-theme="light"] .bg-black\/30,
+html[data-theme="light"] pre.bg-black\/40 { color: #f5f2ea; }
+
+/* controls & widgets */
+html[data-theme="light"] .pill {
+  border-color: rgba(20,18,28,0.16);
+  background: rgba(255,255,255,0.6);
+  color: var(--ink);
+}
+html[data-theme="light"] .pill:hover { background: rgba(255,255,255,0.9); border-color: rgba(20,18,28,0.3); box-shadow: 0 14px 34px -16px rgba(60,45,20,0.3); }
+html[data-theme="light"] .nav-item { color: rgba(20,18,28,0.62); }
+html[data-theme="light"] .nav-item:hover { color: var(--ink); background: rgba(20,18,28,0.06); }
+html[data-theme="light"] .nav-item.active { color: var(--ivory); }
+html[data-theme="light"] .nav-chip { background: var(--ink); box-shadow: 0 10px 26px -12px rgba(20,18,28,0.5); }
+html[data-theme="light"] .glass-input {
+  background: rgba(255,255,255,0.7);
+  border-color: rgba(20,18,28,0.14);
+  color: var(--ink);
+}
+html[data-theme="light"] .glass-input::placeholder { color: rgba(20,18,28,0.4); }
+html[data-theme="light"] .glass-input:focus { background: rgba(255,255,255,0.95); }
+html[data-theme="light"] select.glass-input option { background: #fff; color: var(--ink); }
+html[data-theme="light"] input[type="date"].glass-input::-webkit-calendar-picker-indicator,
+html[data-theme="light"] input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: none; opacity: 0.7; }
+
+html[data-theme="light"] .task-row:hover { background: rgba(20,18,28,0.045); }
+html[data-theme="light"] .task-row.done { background: rgba(20,18,28,0.04); }
+html[data-theme="light"] .task-box { border-color: rgba(20,18,28,0.35); background: rgba(20,18,28,0.03); }
+html[data-theme="light"] .task-label-done { text-decoration-color: rgba(20,18,28,0.5); }
+html[data-theme="light"] .date-tile {
+  border-color: rgba(20,18,28,0.10);
+  background: rgba(255,255,255,0.5);
+  color: rgba(20,18,28,0.72);
+}
+html[data-theme="light"] .date-tile:hover { background: rgba(255,255,255,0.85); border-color: rgba(20,18,28,0.22); }
+html[data-theme="light"] .date-tile.active { background: var(--ink); color: var(--ivory); }
+html[data-theme="light"] .date-tile.active .bar { background: rgba(245,242,234,0.25); }
+html[data-theme="light"] .ring-track { stroke: rgba(20,18,28,0.12); }
+html[data-theme="light"] .shimmer-text {
+  background: linear-gradient(100deg, #14121c 20%, #a97f2c 42%, #14121c 64%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+html[data-theme="light"] .skeleton {
+  background: linear-gradient(100deg, rgba(20,18,28,0.06) 35%, rgba(20,18,28,0.13) 50%, rgba(20,18,28,0.06) 65%);
+  background-size: 220% 100%;
+}
+html[data-theme="light"] .chip-neutral { background: rgba(20,18,28,0.07); color: rgba(20,18,28,0.85); border-color: rgba(20,18,28,0.16); }
