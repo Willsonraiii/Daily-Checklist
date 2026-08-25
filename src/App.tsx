@@ -1865,7 +1865,64 @@ export default function App() {
     <div className="stage font-body">
       <div className="orb orb-1" /><div className="orb orb-2" /><div className="orb orb-3" />
 
-      <div className="relative z-10 max-w-[1280px] mx-auto px-5 lg:px-8 pb-20 pt-6">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-[248px] z-40 flex-col glass-deep !rounded-none p-6 overflow-y-auto">
+        <motion.button
+          onClick={() => setView('home')}
+          className="flex items-center gap-3 group w-fit"
+          whileTap={{ scale: 0.97 }}
+        >
+          <span className="w-11 h-11 rounded-[15px] bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07] grid place-items-center shadow-[0_14px_34px_-10px_rgba(201,154,69,0.6)] group-hover:rotate-[-6deg] transition-transform duration-300">
+            <ClipboardList width={21} height={21} strokeWidth={2.4} />
+          </span>
+          <span className="font-display uppercase text-[14px] leading-[1.1] text-left">Daily<br />Check</span>
+        </motion.button>
+
+        <p className="mt-9 mb-2 px-3 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white/40">Workspace</p>
+        <nav className="flex flex-col gap-1.5" aria-label="Primary">
+          {NAV_ITEMS.map(([v, l]) => {
+            const Ic = DOCK_ICONS[v];
+            const active = view === v;
+            return (
+              <motion.button
+                key={v}
+                onClick={() => setView(v)}
+                whileTap={{ scale: 0.97 }}
+                className={`nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] ${active ? 'active' : ''}`}
+              >
+                {active && <motion.span layoutId="side-chip" className="nav-chip !rounded-[15px]" transition={{ duration: 0.4, ease: EASE }} />}
+                <Ic width={16} height={16} className="relative z-10 shrink-0" />
+                <span className="relative z-10 font-extrabold">{l}</span>
+              </motion.button>
+            );
+          })}
+        </nav>
+
+        <div className="mt-auto flex flex-col gap-1.5">
+          <motion.button
+            onClick={tryAdmin}
+            whileTap={{ scale: 0.97 }}
+            className={`nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] ${view === 'admin' ? 'active' : ''}`}
+          >
+            {view === 'admin' && <motion.span layoutId="side-chip" className="nav-chip !rounded-[15px]" transition={{ duration: 0.4, ease: EASE }} />}
+            {adminUnlocked ? <ShieldCheck width={16} height={16} className="relative z-10 shrink-0" /> : <Lock width={16} height={16} className="relative z-10 shrink-0" />}
+            <span className="relative z-10 font-extrabold">{adminUnlocked ? 'Admin desk' : 'Unlock admin'}</span>
+          </motion.button>
+
+          <div className="glass-soft rounded-[15px] px-4 py-3 mt-3 flex items-center gap-3">
+            {staffName ? <Avatar name={staffName} size={30} /> : <span className="w-[30px] h-[30px] rounded-full bg-white/10 grid place-items-center text-white/70"><User width={14} height={14} /></span>}
+            <div className="min-w-0">
+              <p className="text-[12.5px] font-extrabold truncate">{staffName || 'Not signed in'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-white/50 flex items-center gap-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full ${cloudOn && pendingSync === 0 ? 'bg-emerald-400' : cloudStatus === 'checking' ? 'bg-amber-300 pulse-soft' : 'bg-rose-400'}`} />
+                {pendingSync > 0 ? `${pendingSync} queued` : cloudOn ? 'synced' : cloudStatus === 'checking' ? 'syncing' : 'local'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div className="relative z-10 lg:ml-[248px]">
+      <div className="max-w-[1200px] mx-auto px-5 lg:px-10 pb-20 pt-6">
         <header className="flex flex-wrap items-center gap-4">
           <motion.button
             onClick={() => setView('home')}
@@ -1878,7 +1935,7 @@ export default function App() {
             <span className="font-display uppercase text-[15px] leading-[1.1]">Daily<br />Check</span>
           </motion.button>
 
-          <nav className="glass rounded-full p-1.5 ml-auto hidden md:flex items-center gap-1">
+          <nav className="glass rounded-full p-1.5 ml-auto hidden md:flex lg:hidden items-center gap-1">
             {NAV_ITEMS.map(([v, l]) => (
               <button key={v} onClick={() => setView(v)} className={`nav-item ${view === v ? 'active' : ''}`}>
                 {view === v && <motion.span layoutId="nav-chip" className="nav-chip" transition={{ duration: 0.45, ease: EASE }} />}
@@ -2038,6 +2095,7 @@ export default function App() {
             </a>
           </p>
         </footer>
+      </div>
       </div>
 
       <nav className="md:hidden mobile-dock glass-deep" aria-label="Primary">
