@@ -320,6 +320,12 @@ input[type="date"].glass-input::-webkit-calendar-picker-indicator,
 input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: invert(0.9) sepia(0.3) saturate(3) hue-rotate(5deg); opacity: 0.85; cursor: pointer; }
 
 /* ---------- motion helpers ---------- */
+/* tactile press feedback for every tappable surface */
+.nav-item:active { transform: scale(0.95); }
+.date-tile:active { transform: translateY(-1px) scale(0.96); }
+.task-row:active .task-box { transform: scale(0.88); }
+.glass-input { transition: background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease; }
+
 .float-slow { animation: floaty 7s ease-in-out infinite; }
 @keyframes floaty { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-12px) rotate(-1deg); } }
 .pulse-soft { animation: pulseSoft 2.2s ease-in-out infinite; }
@@ -480,6 +486,7 @@ html[data-theme="light"] .modal-veil { background: rgba(236,229,214,0.66); }
 /* text — remap the ivory-alpha utilities to ink-alpha */
 html[data-theme="light"] .text-white,
 html[data-theme="light"] .text-white\/85 { color: rgba(20,18,28,0.88); }
+html[data-theme="light"] .text-white\/80 { color: rgba(20,18,28,0.80); }
 html[data-theme="light"] .text-white\/75,
 html[data-theme="light"] .text-white\/70 { color: rgba(20,18,28,0.72); }
 html[data-theme="light"] .text-white\/65,
@@ -489,9 +496,11 @@ html[data-theme="light"] .text-white\/50 { color: rgba(20,18,28,0.55); }
 html[data-theme="light"] .text-white\/45,
 html[data-theme="light"] .text-white\/40 { color: rgba(20,18,28,0.46); }
 html[data-theme="light"] .text-white\/35,
-html[data-theme="light"] .text-white\/25 { color: rgba(20,18,28,0.36); }
+html[data-theme="light"] .text-white\/30 { color: rgba(20,18,28,0.38); }
+html[data-theme="light"] .text-white\/25 { color: rgba(20,18,28,0.32); }
 
 /* borders & translucent fills */
+html[data-theme="light"] .border-white\/\[0\.07\] { border-color: rgba(20,18,28,0.08); }
 html[data-theme="light"] .border-white\/10,
 html[data-theme="light"] .border-white\/15 { border-color: rgba(20,18,28,0.14); }
 html[data-theme="light"] .border-white\/20,
@@ -501,15 +510,33 @@ html[data-theme="light"] .bg-white\/\[0\.05\],
 html[data-theme="light"] .bg-white\/\[0\.06\],
 html[data-theme="light"] .bg-white\/\[0\.07\],
 html[data-theme="light"] .bg-white\/10 { background-color: rgba(20,18,28,0.07); }
+html[data-theme="light"] .bg-white\/15,
+html[data-theme="light"] .bg-white\/20,
+html[data-theme="light"] .bg-white\/25 { background-color: rgba(20,18,28,0.11); }
 html[data-theme="light"] .hover\:bg-white\/10:hover,
 html[data-theme="light"] .hover\:bg-white\/15:hover,
 html[data-theme="light"] .hover\:bg-white\/20:hover,
 html[data-theme="light"] .hover\:bg-white\/25:hover { background-color: rgba(20,18,28,0.13); }
 html[data-theme="light"] .hover\:border-white\/40:hover { border-color: rgba(20,18,28,0.32); }
+html[data-theme="light"] .ring-white\/25 { --tw-ring-color: rgba(20,18,28,0.22); }
 html[data-theme="light"] .bg-black\/30 { background-color: rgba(20,18,28,0.06); }
 html[data-theme="light"] .bg-black\/40 { background-color: rgba(20,18,28,0.82); }
 html[data-theme="light"] .bg-black\/30,
 html[data-theme="light"] pre.bg-black\/40 { color: #f5f2ea; }
+
+/* accent text — dark-mode pastels are illegible on parchment, darken them */
+html[data-theme="light"] .text-amber-100,
+html[data-theme="light"] .text-amber-200,
+html[data-theme="light"] .text-amber-200\/70,
+html[data-theme="light"] .text-amber-200\/80,
+html[data-theme="light"] .text-amber-200\/90 { color: #8a5f13; }
+html[data-theme="light"] .text-amber-300,
+html[data-theme="light"] .text-amber-300\/70 { color: #9a6b14; }
+html[data-theme="light"] .text-emerald-300 { color: #0e7a62; }
+html[data-theme="light"] .text-rose-200,
+html[data-theme="light"] .text-rose-300,
+html[data-theme="light"] .text-rose-300\/80 { color: #b81e48; }
+html[data-theme="light"] .text-violet-200 { color: #6d28d9; }
 
 /* controls & widgets */
 html[data-theme="light"] .pill {
@@ -557,3 +584,22 @@ html[data-theme="light"] .skeleton {
   background-size: 220% 100%;
 }
 html[data-theme="light"] .chip-neutral { background: rgba(20,18,28,0.07); color: rgba(20,18,28,0.85); border-color: rgba(20,18,28,0.16); }
+html[data-theme="light"] .chip-ok      { background: rgba(14,122,98,0.10); color: #0b6b55; border-color: rgba(14,122,98,0.32); }
+html[data-theme="light"] .chip-warn    { background: rgba(154,107,20,0.10); color: #8a5f13; border-color: rgba(154,107,20,0.35); }
+html[data-theme="light"] .chip-danger  { background: rgba(184,30,72,0.09); color: #b81e48; border-color: rgba(184,30,72,0.30); }
+html[data-theme="light"] .hairline-glow { background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0) 28%); }
+html[data-theme="light"] .sign-stamp { color: #a97f2c; }
+html[data-theme="light"] .toast svg { color: var(--gold-3); }
+html[data-theme="light"] .task-box.on { box-shadow: 0 8px 22px -8px rgba(169,127,44,0.45); }
+html[data-theme="light"] .stat-card::after { opacity: 1; }
+
+/* ============================================================
+   PERFORMANCE · lighter compositing on phones
+   ============================================================ */
+html { scroll-behavior: smooth; }
+@media (max-width: 767px) {
+  .glass { backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); }
+  .glass-deep { backdrop-filter: blur(13px) saturate(1.25); -webkit-backdrop-filter: blur(13px) saturate(1.25); }
+  .modal-veil { backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
+  .orb { filter: blur(48px); opacity: 0.42; }
+}
