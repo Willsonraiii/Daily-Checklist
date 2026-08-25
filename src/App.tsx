@@ -2152,9 +2152,9 @@ export default function App() {
         {toast && (
           <motion.div
             className="toast"
-            initial={{ opacity: 0, y: 24, scale: 0.94 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 14, scale: 0.96 }}
+            initial={{ opacity: 0, y: 24, scale: 0.94, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, scale: 1, x: '-50%' }}
+            exit={{ opacity: 0, y: 14, scale: 0.96, x: '-50%' }}
             transition={{ type: 'spring', stiffness: 380, damping: 26 }}
           >
             <Check width={15} height={15} strokeWidth={3} /> {toast}

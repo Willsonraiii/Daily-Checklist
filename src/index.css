@@ -345,7 +345,7 @@ input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: inve
   z-index: 80;
   left: 50%;
   bottom: calc(26px + env(safe-area-inset-bottom, 0px));
-  margin-left: -160px;
+  transform: translateX(-50%);
   width: max-content;
   max-width: min(86vw, 340px);
   background: rgba(16, 16, 31, 0.92);
@@ -447,35 +447,55 @@ html[data-theme="light"] {
   --ring-label: #14121c;
   color-scheme: light;
 }
-html[data-theme="light"] body { background: #f2ede3; }
+html[data-theme="light"] body { background: #efe9dc; }
 html[data-theme="light"] .stage {
   background:
-    radial-gradient(1100px 600px at 85% -12%, rgba(139, 124, 247, 0.12), transparent 62%),
-    radial-gradient(900px 520px at -10% 22%, rgba(79, 209, 197, 0.10), transparent 58%),
-    radial-gradient(1200px 700px at 55% 118%, rgba(201, 154, 69, 0.14), transparent 60%),
-    linear-gradient(168deg, #faf7f0 0%, #f2ede3 48%, #ece5d6 100%);
+    radial-gradient(1100px 600px at 85% -12%, rgba(109, 40, 217, 0.07), transparent 62%),
+    radial-gradient(900px 520px at -10% 22%, rgba(13, 122, 98, 0.06), transparent 58%),
+    radial-gradient(1200px 700px at 55% 118%, rgba(169, 127, 44, 0.16), transparent 60%),
+    linear-gradient(168deg, #fbf8f1 0%, #f1ebde 46%, #e7dfcc 100%);
+}
+/* warm vignette grounds the composition */
+html[data-theme="light"] .stage::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background:
+    radial-gradient(140% 100% at 50% 0%, rgba(255,255,255,0.5), transparent 42%),
+    radial-gradient(160% 120% at 50% 108%, rgba(94,72,28,0.14), transparent 55%);
 }
 html[data-theme="light"] ::selection { background: var(--gold-3); color: #fff; }
 html[data-theme="light"] ::-webkit-scrollbar-thumb { background-color: rgba(20,18,28,0.22); }
 html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background-color: rgba(20,18,28,0.38); }
 html[data-theme="light"] .orb { opacity: 0.4; }
 
-/* surfaces */
+/* surfaces — crisp linen cards with diffuse warm shadows */
 html[data-theme="light"] .glass {
-  background: linear-gradient(165deg, rgba(255,255,255,0.75), rgba(255,255,255,0.45));
-  border-color: rgba(20,18,28,0.09);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 24px 60px -28px rgba(60,45,20,0.25);
+  background: linear-gradient(165deg, rgba(255,255,255,0.86), rgba(255,253,248,0.62));
+  border-color: rgba(94,72,28,0.11);
+  backdrop-filter: blur(16px) saturate(1.15);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.95),
+    0 1px 2px rgba(94,72,28,0.05),
+    0 22px 48px -26px rgba(94,72,28,0.32);
 }
 html[data-theme="light"] .glass-soft {
-  background: rgba(255,255,255,0.55);
-  border-color: rgba(20,18,28,0.08);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
+  background: rgba(255,255,255,0.66);
+  border-color: rgba(94,72,28,0.09);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 2px 8px -3px rgba(94,72,28,0.12);
 }
 html[data-theme="light"] .glass-deep {
-  background: linear-gradient(170deg, rgba(255,255,255,0.92), rgba(250,247,240,0.94));
-  border-color: rgba(20,18,28,0.10);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 40px 90px -34px rgba(60,45,20,0.30);
+  background: linear-gradient(170deg, rgba(255,255,255,0.96), rgba(250,246,238,0.97));
+  border-color: rgba(94,72,28,0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,1),
+    0 36px 80px -30px rgba(70,52,18,0.4),
+    0 2px 6px -2px rgba(94,72,28,0.12);
 }
+html[data-theme="light"] .gold-edge { border-color: rgba(169,127,44,0.45); }
 html[data-theme="light"] .toast {
   background: rgba(255,255,255,0.95);
   border-color: rgba(201,154,69,0.5);
@@ -537,6 +557,15 @@ html[data-theme="light"] .text-rose-200,
 html[data-theme="light"] .text-rose-300,
 html[data-theme="light"] .text-rose-300\/80 { color: #b81e48; }
 html[data-theme="light"] .text-violet-200 { color: #6d28d9; }
+html[data-theme="light"] .hover\:text-white:hover { color: var(--ink); }
+
+/* amber-tinted chips & borders — pale gold vanishes on parchment */
+html[data-theme="light"] .bg-amber-300\/10,
+html[data-theme="light"] .bg-amber-300\/15 { background-color: rgba(154,107,20,0.12); }
+html[data-theme="light"] .border-amber-300\/20,
+html[data-theme="light"] .border-amber-300\/30 { border-color: rgba(154,107,20,0.38); }
+html[data-theme="light"] .border-t-amber-300 { border-top-color: #a97f2c; }
+html[data-theme="light"] .shadow-\[0_0_12px_rgba\(228\,192\,120\,0\.9\)\] { box-shadow: 0 0 12px rgba(169,127,44,0.55); }
 
 /* controls & widgets */
 html[data-theme="light"] .pill {

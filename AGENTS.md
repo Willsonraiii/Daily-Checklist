@@ -40,6 +40,8 @@ When finishing a work session in this repo:
 3. Commit changes if user asks.
 
 ### Current Status
-Last worked on: 2026-08-25 — added realtime sync, offline queue,
-PIN sign-in, light theme, insights pane and styled confirm dialogs
-(commit 3bbcea4). Working tree clean at that point.
+Last worked on: 2026-08-25 — fixed light theme (completed alpha remaps
+text-white/80·30, bg-white/15–25, ring/border gaps; darkened amber/emerald/
+rose/violet accents for parchment contrast), reduced backdrop blur on mobile
+for smoothness, added tactile press feedback. Deployed to Pages OK.
+Git auth: use `gh` CLI (logged in as Willsonraiii) — GCM popup hangs.

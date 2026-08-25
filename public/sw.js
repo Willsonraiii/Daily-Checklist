@@ -1,4 +1,4 @@
-const CACHE_NAME = 'daily-check-v4';
+const CACHE_NAME = 'daily-check-v5';
 const ASSETS = [
   '/',
   '/index.html',
@@ -25,6 +25,27 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  const isNavigation = event.request.mode === 'navigate' ||
+    (url.origin === location.origin && (url.pathname === '/' || url.pathname.endsWith('/index.html')));
+
+  // app shell: network-first so deploys go live immediately; cache only as offline fallback
+  if (isNavigation) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response && response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put('/index.html', clone));
+        }
+        return response;
+      }).catch(() =>
+        caches.match('/index.html').then(c => c || caches.match('/'))
+      )
+    );
+    return;
+  }
+
+  // static assets: cache-first
   event.respondWith(
     caches.match(event.request).then(cached => {
       const fetchPromise = fetch(event.request).then(response => {
