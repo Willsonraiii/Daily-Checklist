@@ -259,7 +259,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.staff_members;
 // MOTION PRIMITIVES
 // ==========================================
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
-const REDUCE_MOTION = typeof navigator !== 'undefined' && navigator.platform !== undefined && /Mobi|Android/i.test(navigator.userAgent) ? false : true;
+const REDUCE_MOTION = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const staggerParent: Variants = {
   hidden: {},
@@ -465,7 +465,7 @@ export default function App() {
   const [swipeStartX, setSwipeStartX] = useState(0);
   const [swipeX, setSwipeX] = useState(0);
   const swipeThreshold = 30; // minimum pixels to register as swipe
-  const [swipeComplete, setSwipeComplete] = useState(false);
+  const [swipeComplete, setSwipeComplete] = useState<number>(0);
 
   const [viewDir, setViewDir] = useState(1);
   const [paneDir, setPaneDir] = useState(1);
@@ -486,14 +486,17 @@ export default function App() {
     setPaneState(p);
   };
 
-  // touch/gesture handlers for mobile swipe between views
+  // touch/gesture handlers for mobile swipe between views — fixed stale closure + scroll jank
   useEffect(() => {
+    if (REDUCE_MOTION) return; // respect reduced motion: no swipe navigation
     let touchStartX = 0;
     let isMoving = false;
+    let pendingDir = 0; // 0 none, 1 = swipe right (prev), -1 = swipe left (next)
 
     const handleTouchStart = (e: TouchEvent) => {
       touchStartX = e.touches[0].clientX;
       isMoving = true;
+      pendingDir = 0;
       setSwipeX(touchStartX);
     };
 
@@ -502,112 +505,60 @@ export default function App() {
       const currentX = e.touches[0].clientX;
       const diff = touchStartX - currentX;
       setSwipeX(currentX);
-      // visualize swipe progress during drag
       if (Math.abs(diff) > swipeThreshold) {
-        e.preventDefault();
-        setSwipeComplete(diff > 0 ? -1 : 1);
+        pendingDir = diff > 0 ? -1 : 1;
+        setSwipeComplete(pendingDir);
+      } else {
+        pendingDir = 0;
+        setSwipeComplete(0);
       }
     };
 
     const handleTouchEnd = () => {
       if (!isMoving) return;
       isMoving = false;
-      // if swipe completed beyond threshold, navigate
-      if (swipeComplete) {
-        const dir = swipeComplete; // 1 = left, -1 = right
+      if (pendingDir !== 0) {
         const from = VIEW_ORDER.indexOf(viewRef.current);
-        const to = dir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
-        setViewState(VIEW_ORDER[to]);
+        const to = pendingDir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
+        goView(VIEW_ORDER[to]);
       }
+      pendingDir = 0;
       setSwipeX(0);
-      setSwipeComplete(false);
+      setSwipeComplete(0);
       setSwipeStartX(0);
     };
 
-    const handlePointerDown = (e: PointerEvent) => {
-      touchStartX = e.clientX;
-      isMoving = true;
-      setSwipeX(touchStartX);
-    };
-
-    const handlePointerMove = (e: PointerEvent) => {
-      if (!isMoving) return;
-      const currentX = e.clientX;
-      const diff = touchStartX - currentX;
-      setSwipeX(currentX);
-      if (Math.abs(diff) > swipeThreshold) {
-        e.preventDefault();
-        setSwipeComplete(diff > 0 ? -1 : 1);
-      }
-    };
-
-    const handlePointerUp = () => {
-      if (!isMoving) return;
-      isMoving = false;
-      if (swipeComplete) {
-        const dir = swipeComplete;
-        const from = VIEW_ORDER.indexOf(viewRef.current);
-        const to = dir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
-        setViewState(VIEW_ORDER[to]);
-      }
-      setSwipeX(0);
-      setSwipeComplete(false);
-      setSwipeStartX(0);
-    };
-
-    // Add event listeners for both touch and pointer events
     const doc = document;
-    doc.addEventListener('touchstart', handleTouchStart, { passive: false });
-    doc.addEventListener('touchmove', handleTouchMove, { passive: false });
+    doc.addEventListener('touchstart', handleTouchStart, { passive: true });
+    doc.addEventListener('touchmove', handleTouchMove, { passive: true });
     doc.addEventListener('touchend', handleTouchEnd);
-    doc.addEventListener('pointerdown', handlePointerDown);
-    doc.addEventListener('pointermove', handlePointerMove);
-    doc.addEventListener('pointerup', handlePointerUp);
 
-    // cleanup
     return () => {
       doc.removeEventListener('touchstart', handleTouchStart);
       doc.removeEventListener('touchmove', handleTouchMove);
       doc.removeEventListener('touchend', handleTouchEnd);
-      doc.removeEventListener('pointerdown', handlePointerDown);
-      doc.removeEventListener('pointermove', handlePointerMove);
-      doc.removeEventListener('pointerup', handlePointerUp);
     };
   }, []); // empty deps — run once on mount
 
-  // respect prefers-reduced-motion: disable swipe gestures when user prefers reduced motion
+  // sync with OS prefers-reduced-motion — fixed addEventListenerListener crash
   useEffect(() => {
-    if (!REDUCE_MOTION) return;
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const handleChange = (e: MediaQueryListEvent) => {
-      if (e.matches) {
-        setSwipeComplete(false);
-        // also disable the swipe indicator by hiding it
-        const indicator = document.querySelector('.swipe-indicator');
-        if (indicator) indicator.style.display = 'none';
-      } else {
-        setSwipeComplete(false); // reset if was stuck
-      }
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = () => {
+      setSwipeComplete(0);
+      const indicator = document.querySelector('.swipe-indicator') as HTMLElement | null;
+      if (mq.matches && indicator) indicator.style.display = 'none';
+      if (!mq.matches && indicator) indicator.style.display = '';
     };
-    prefersReduced.addEventListenerListener('change', handleChange);
-    handleChange({ matches: prefersReduced.matches });
-    return () => prefersReduced.removeEventListenerListener('change', handleChange);
-  }, [REDUCE_MOTION]);
-
-  // reduced-motion fallback: on desktop with reduced-motion preference, skip swipe entirely
-  useEffect(() => {
-    if (!REDUCE_MOTION) return;
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const updateReduced = (e: MediaQueryListEvent) => {
-      // if user wants reduced motion, disable swipe gestures
-      if (e.matches) {
-        setSwipeComplete(false);
-      }
-    };
-    prefersReduced.addEventListenerListener('change', updateReduced);
-    updateReduced({ matches: prefersReduced.matches });
-    return () => prefersReduced.removeEventListenerListener('change', updateReduced);
-  }, [REDUCE_MOTION]);
+    // Safari fallback
+    if (typeof (mq as MediaQueryList).addEventListener === 'function') {
+      (mq as MediaQueryList).addEventListener('change', onChange);
+      return () => (mq as MediaQueryList).removeEventListener('change', onChange);
+    } else {
+      // @ts-ignore legacy
+      mq.addListener(onChange);
+      return () => { try { /* @ts-ignore */ mq.removeListener(onChange); } catch {} };
+    }
+  }, []);
 
   // theme
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
@@ -2456,8 +2407,7 @@ export default function App() {
               {active && (
                 <motion.span
                   layoutId="dock-chip"
-                  className={`absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500 ${!REDUCE_MOTION ? 'transition-none' : 'transition-transform duration-0.4 ease-EASE'}`}
-                  style={{ transform: REDUCE_MOTION ? 'scaleX(1)' : `translateX(${swipeComplete * 90}px)` }}
+                  className="absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500"
                   transition={{ type: REDUCE_MOTION ? 'none' : 'spring', stiffness: 320, damping: 27 }}
                 />
               )}
