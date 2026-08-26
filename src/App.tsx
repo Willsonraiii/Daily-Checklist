@@ -560,8 +560,21 @@ export default function App() {
     }
   }, []);
 
-  // theme
+  // theme — premium circular reveal
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
+  const [themeTransition, setThemeTransition] = useState<null | { x: number; y: number; next: 'dark' | 'light' }>(null);
+  const handleThemeToggle = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    if (REDUCE_MOTION) { setTheme(next); haptic(10); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    haptic(10);
+    setThemeTransition({ x, y, next });
+    // swap dataset mid-reveal for buttery morph
+    window.setTimeout(() => setTheme(next), 260);
+    window.setTimeout(() => setThemeTransition(null), 740);
+  };
 
   // confirm dialog (replaces window.confirm)
   type ConfirmSpec = { title: string; body: string; confirmLabel: string; danger?: boolean; typedPhrase?: string; onConfirm: () => void };
@@ -1534,7 +1547,23 @@ export default function App() {
         <button className="pill" onClick={() => { setAdminUnlocked(false); goView('home'); showToast('Admin locked.'); }}><Lock width={14} height={14} /> Lock admin</button>
       </div>
 
-      <div className="flex gap-1 glass-soft rounded-full p-1.5 w-fit max-w-full overflow-x-auto mb-8">
+      <motion.div
+        className="flex gap-1 glass-soft rounded-full p-1.5 w-fit max-w-full overflow-hidden mb-8 touch-pan-y select-none"
+        drag="x"
+        dragElastic={0.12}
+        dragMomentum={false}
+        dragConstraints={{ left: 0, right: 0 }}
+        onDragEnd={(_, info) => {
+          if (REDUCE_MOTION) return;
+          const threshold = 36;
+          if (Math.abs(info.offset.x) < threshold) return;
+          const dir = info.offset.x < 0 ? 1 : -1;
+          const idx = ADMIN_PANE_ORDER.indexOf(adminPane);
+          const next = Math.max(0, Math.min(ADMIN_PANE_ORDER.length - 1, idx + dir));
+          if (next !== idx) { haptic(10); goPane(ADMIN_PANE_ORDER[next]); }
+        }}
+        style={{ x: 0 }}
+      >
         {([
           ['studio', 'Checklists', PencilLine],
           ['journal', 'Journal', CalendarDays],
@@ -1558,11 +1587,11 @@ export default function App() {
             className={`nav-item whitespace-nowrap !normal-case !tracking-normal text-[13px] inline-flex items-center gap-2 ${adminPane === 'developer' ? 'active' : ''}`}
             title="Developer only"
           >
-            {adminPane === 'developer' && <motion.span layoutId="admin-tab-chip" className="nav-chip" transition={{ duration: 0.4, ease: EASE }} />}
+            {adminPane === 'developer' && <motion.span layoutId="admin-tab-chip" className="nav-chip" transition={{ duration: 0.45, ease: EASE }} />}
             <Terminal width={14} height={14} className="relative z-10" /> <span className="relative z-10">Developer</span>
           </button>
         )}
-      </div>
+      </motion.div>
 
       <AnimatePresence mode="wait" custom={paneDir}>
         <motion.div key={adminPane} custom={paneDir} variants={pageVariants} initial="enter" animate="center" exit="exit" transition={{ duration: 0.38, ease: EASE }}>
@@ -1570,14 +1599,29 @@ export default function App() {
             <div className="grid grid-cols-12 gap-6">
               <div className="col-span-12 lg:col-span-3">
                 <p className="text-[14px] font-semibold text-white/70 leading-relaxed">Rewrite tasks, add new ones, delete old ones. Edits sync to every device within seconds.</p>
-                <div className="inline-flex glass-soft rounded-full p-1 mt-6">
+                <motion.div
+                  className="inline-flex glass-soft rounded-full p-1 mt-6 overflow-hidden touch-pan-y select-none"
+                  drag="x"
+                  dragElastic={0.14}
+                  dragMomentum={false}
+                  dragConstraints={{ left: 0, right: 0 }}
+                  onDragEnd={(_, info) => {
+                    if (REDUCE_MOTION) return;
+                    if (Math.abs(info.offset.x) < 28) return;
+                    const dir = info.offset.x < 0 ? 1 : -1;
+                    const order: Shift[] = ['opening', 'closing'];
+                    const idx = order.indexOf(editorShift);
+                    const next = Math.max(0, Math.min(1, idx + dir));
+                    if (next !== idx) { haptic(10); setEditorShift(order[next]); }
+                  }}
+                >
                   {(['opening', 'closing'] as Shift[]).map(s => (
                     <button key={s} onClick={() => setEditorShift(s)} className="relative px-5 py-2 rounded-full text-[12px] font-extrabold uppercase tracking-[0.1em] transition-colors">
-                      {editorShift === s && <motion.span layoutId="editor-shift-chip" className="absolute inset-0 rounded-full bg-gradient-to-br from-amber-200 to-amber-500" transition={{ duration: 0.4, ease: EASE }} />}
+                      {editorShift === s && <motion.span layoutId="editor-shift-chip" className="absolute inset-0 rounded-full bg-gradient-to-br from-amber-200 to-amber-500" transition={{ duration: 0.42, ease: EASE }} />}
                       <span className={`relative z-10 ${editorShift === s ? 'text-[#241a07]' : 'text-white/70 hover:text-white'}`}>{s}</span>
                     </button>
                   ))}
-                </div>
+                </motion.div>
               </div>
               <div className="col-span-12 lg:col-span-9 glass rounded-[24px] p-4 sm:p-6">
                 {checklists[editorShift].map((t, i) => (
@@ -2247,7 +2291,7 @@ export default function App() {
           <div className="flex items-center gap-2.5 ml-auto md:ml-0 relative">
             <motion.button
               whileTap={{ scale: 0.92 }}
-              onClick={() => { setTheme(t => (t === 'dark' ? 'light' : 'dark')); haptic(10); }}
+              onClick={handleThemeToggle}
               aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
               title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
               className="w-11 h-11 rounded-full grid place-items-center bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors"
@@ -2398,7 +2442,25 @@ export default function App() {
       </div>
       </div>
 
-      <nav className="md:hidden mobile-dock glass-deep" aria-label="Primary">
+      <motion.nav
+        className="md:hidden mobile-dock glass-deep touch-pan-y select-none overflow-hidden"
+        aria-label="Primary"
+        drag="x"
+        dragElastic={0.12}
+        dragMomentum={false}
+        dragConstraints={{ left: 0, right: 0 }}
+        onDragEnd={(_, info) => {
+          if (REDUCE_MOTION) return;
+          const threshold = 36;
+          if (Math.abs(info.offset.x) < threshold) return;
+          const mobileOrder: View[] = ['home', 'opening', 'closing', 'attendance', 'history'];
+          const dir = info.offset.x < 0 ? 1 : -1;
+          const idx = mobileOrder.indexOf(view as View);
+          if (idx === -1) return;
+          const next = Math.max(0, Math.min(mobileOrder.length - 1, idx + dir));
+          if (next !== idx) { haptic(10); goView(mobileOrder[next]); }
+        }}
+      >
         {([['home', 'Home'], ['opening', 'Open'], ['closing', 'Close'], ['attendance', 'Clock'], ['history', 'Log']] as [View, string][]).map(([v, l]) => {
           const Ic = DOCK_ICONS[v];
           const active = view === v;
@@ -2416,7 +2478,26 @@ export default function App() {
             </button>
           );
         })}
-      </nav>
+      </motion.nav>
+
+      {/* Premium theme circular reveal — iOS-style */}
+      <AnimatePresence>
+        {themeTransition && (
+          <motion.div
+            key={themeTransition.next}
+            initial={{ clipPath: `circle(0px at ${themeTransition.x}px ${themeTransition.y}px)` }}
+            animate={{ clipPath: `circle(${Math.hypot(window.innerWidth, window.innerHeight) * 1.1}px at ${themeTransition.x}px ${themeTransition.y}px)` }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.62, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[60] pointer-events-none"
+            style={{
+              background: themeTransition.next === 'light'
+                ? 'radial-gradient(1200px 700px at 55% 118%, rgba(169,127,44,0.16), transparent 60%), linear-gradient(168deg, #fbf8f1 0%, #f1ebde 46%, #e7dfcc 100%)'
+                : 'radial-gradient(1100px 600px at 85% -12%, rgba(139,124,247,0.16), transparent 62%), linear-gradient(168deg, #0a0a15 0%, #06060c 48%, #050509 100%)',
+            }}
+          />
+        )}
+      </AnimatePresence>
 
         {/* Swipe indicator for mobile */}
         {!REDUCE_MOTION && (
