@@ -335,13 +335,13 @@ function LogList({ events, limit }: { events: ActivityEvent[]; limit?: number })
   }
   return (
     <motion.div
-  variants={staggerParent}
-  initial="hidden"
-  animate="show"
-  className={`glass-soft rounded-[20px] p-2 ${REDUCE_MOTION && 'transition-none'} ``
-  
+      variants={staggerParent}
+      initial="hidden"
+      animate="show"
+      className={`glass-soft rounded-[20px] p-2 ${REDUCE_MOTION ? 'transition-none' : ''}`}
+    >
       {(limit ? events.slice(0, limit) : events).map((e, i) => (
-        <motion.div variants={riseItem} key={e.task.id + "-" + i} className="flex items-center gap-3 px-4 py-3 rounded-[20px]-3 rounded-[14px] hover:bg-white/[0.05] transition-colors">
+        <motion.div variants={riseItem} key={e.task.id + "-" + i} className="flex items-center gap-3 px-4 py-3 rounded-[14px] hover:bg-white/[0.05] transition-colors">
           <span className={`w-8 h-8 rounded-full grid place-items-center shrink-0 ${e.shift === 'opening' ? 'bg-amber-300/15 text-amber-200' : 'bg-violet-400/15 text-violet-200'}`}>
             {e.shift === 'opening' ? <Sun width={14} height={14} /> : <Moon width={14} height={14} />}
           </span>
@@ -2456,12 +2456,11 @@ export default function App() {
               {active && (
                 <motion.span
                   layoutId="dock-chip"
-                  className={`absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500 ${!REDUCE_MOTION ? 'transition-none' : 'transition-transform duration-0.4 ease-EASE'}`
-                  }
+                  className={`absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500 ${!REDUCE_MOTION ? 'transition-none' : 'transition-transform duration-0.4 ease-EASE'}`}
                   style={{ transform: REDUCE_MOTION ? 'scaleX(1)' : `translateX(${swipeComplete * 90}px)` }}
                   transition={{ type: REDUCE_MOTION ? 'none' : 'spring', stiffness: 320, damping: 27 }}
                 />
-              )}/>}
+              )}
               <Ic width={18} height={18} className={`relative z-10 ${active ? 'text-[#241a07]' : 'text-white/60'}`} />
               <span className={`relative z-10 text-[9.5px] font-extrabold uppercase tracking-wide ${active ? 'text-[#241a07]' : 'text-white/60'}`}>{l}</span>
             </button>
