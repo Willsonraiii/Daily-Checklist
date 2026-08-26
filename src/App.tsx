@@ -338,7 +338,7 @@ function LogList({ events, limit }: { events: ActivityEvent[]; limit?: number })
   variants={staggerParent}
   initial="hidden"
   animate="show"
-  className={`glass-soft rounded-[20px] p-2 ${REDUCE_MOTION ? 'transition-none' : ''}`}
+  className={`glass-soft rounded-[20px] p-2 ${REDUCE_MOTION && 'transition-none'} ``
   
       {(limit ? events.slice(0, limit) : events).map((e, i) => (
         <motion.div variants={riseItem} key={`${e.task.id}-${e.log.ts}-${i}`} className="flex items-center gap-3 px-4 py-3 rounded-[14px] hover:bg-white/[0.05] transition-colors">
