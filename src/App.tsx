@@ -3,7 +3,8 @@ import {
   ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardList,
   Clock3, Download, FileDown, History, KeyRound, Lock, Moon, PencilLine, Plus,
   Settings, ShieldCheck, Sun, Trash2, User, UserPlus, Wifi, X,
-  Briefcase, CheckCircle2, AlertCircle, UserCheck, Code, BellRing, Database, TrendingUp, Flame
+  Briefcase, CheckCircle2, AlertCircle, UserCheck, Code, BellRing, Database, TrendingUp, Flame,
+  Terminal, UserX, RotateCw, Save
 } from 'lucide-react';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 
@@ -22,6 +23,10 @@ const CHECKLISTS_KEY = 'bloom_cafe_checklist_content_v1';
 const USERS_KEY = 'daily_check_users_v1';
 const ATTENDANCE_KEY = 'daily_check_attendance_v1';
 const AUDIT_LOG_KEY = 'daily_check_audit_logs_v1';
+
+// Developer access code — enter this in the admin gate to unlock the hidden
+// Developer desk (raw data console). Admins never see it.
+const DEV_CODE = 'willson.dev';
 
 type StaffRole = 'Admin' | 'Developer' | 'Manager' | 'Supervisor' | 'Staff';
 type StaffMember = {
@@ -85,7 +90,7 @@ function colorFor(name: string) {
 // ==========================================
 type Shift = 'opening' | 'closing';
 type View = 'home' | Shift | 'attendance' | 'history' | 'admin';
-type AdminPane = 'studio' | 'journal' | 'export' | 'settings' | 'insights' | 'setup';
+type AdminPane = 'studio' | 'journal' | 'export' | 'settings' | 'insights' | 'setup' | 'developer';
 type TaskDef = { id: string; label: string; detail: string };
 type ChecklistConfig = Record<Shift, TaskDef[]>;
 type TaskLog = { done: boolean; staff: string; ts: string };
@@ -254,6 +259,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.staff_members;
 // MOTION PRIMITIVES
 // ==========================================
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+const REDUCE_MOTION = typeof navigator !== 'undefined' && navigator.platform !== undefined && /Mobi|Android/i.test(navigator.userAgent) ? false : true;
 
 const staggerParent: Variants = {
   hidden: {},
@@ -263,12 +269,14 @@ const riseItem: Variants = {
   hidden: { opacity: 0, y: 20 },
   show: { opacity: 1, y: 0, transition: { duration: 0.55, ease: EASE } },
 };
-const pageMotion = {
-  initial: { opacity: 0, y: 26, filter: 'blur(8px)' },
-  animate: { opacity: 1, y: 0, filter: 'blur(0px)' },
-  exit: { opacity: 0, y: -18, filter: 'blur(8px)' },
-  transition: { duration: 0.42, ease: EASE },
+const pageVariants: Variants = {
+  enter: (dir: number) => ({ opacity: 0, x: dir * 48 }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: number) => ({ opacity: 0, x: dir * -48 }),
 };
+
+const VIEW_ORDER: View[] = ['home', 'opening', 'closing', 'attendance', 'history', 'admin'];
+const ADMIN_PANE_ORDER: AdminPane[] = ['studio', 'journal', 'insights', 'export', 'settings', 'setup', 'developer'];
 
 // ==========================================
 // PRESENTATIONAL COMPONENTS
@@ -326,7 +334,12 @@ function LogList({ events, limit }: { events: ActivityEvent[]; limit?: number })
     );
   }
   return (
-    <motion.div variants={staggerParent} initial="hidden" animate="show" className="glass-soft rounded-[20px] p-2">
+    <motion.div
+  variants={staggerParent}
+  initial="hidden"
+  animate="show"
+  className={`glass-soft rounded-[20px] p-2 ${REDUCE_MOTION ? 'transition-none' : ''}`}
+  
       {(limit ? events.slice(0, limit) : events).map((e, i) => (
         <motion.div variants={riseItem} key={`${e.task.id}-${e.log.ts}-${i}`} className="flex items-center gap-3 px-4 py-3 rounded-[14px] hover:bg-white/[0.05] transition-colors">
           <span className={`w-8 h-8 rounded-full grid place-items-center shrink-0 ${e.shift === 'opening' ? 'bg-amber-300/15 text-amber-200' : 'bg-violet-400/15 text-violet-200'}`}>
@@ -410,7 +423,7 @@ export default function App() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [cloudStatus, setCloudStatus] = useState<'checking' | 'off' | CloudStatus>('checking');
-  const [view, setView] = useState<View>('home');
+  const [view, setViewState] = useState<View>('home');
   const [staffName, setStaffName] = useState('');
   const [nameOpen, setNameOpen] = useState(false);
   const [nameInput, setNameInput] = useState('');
@@ -419,7 +432,7 @@ export default function App() {
   const [showGate, setShowGate] = useState(false);
   const [gateCode, setGateCode] = useState('');
   const [gateError, setGateError] = useState('');
-  const [adminPane, setAdminPane] = useState<AdminPane>('settings');
+  const [adminPane, setPaneState] = useState<AdminPane>('settings');
   const [editorShift, setEditorShift] = useState<Shift>('opening');
 
   const [selectedDate, setSelectedDate] = useState(formatKey(new Date()));
@@ -444,6 +457,157 @@ export default function App() {
   const [justChecked, setJustChecked] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [liveClock, setLiveClock] = useState(new Date());
+  const [devUnlocked, setDevUnlocked] = useState(false);
+  const [devStoreKey, setDevStoreKey] = useState<'records' | 'users' | 'attendance' | 'checklists'>('records');
+  const [devJson, setDevJson] = useState('');
+
+  // swipe/gesture state for tab navigation
+  const [swipeStartX, setSwipeStartX] = useState(0);
+  const [swipeX, setSwipeX] = useState(0);
+  const swipeThreshold = 30; // minimum pixels to register as swipe
+  const [swipeComplete, setSwipeComplete] = useState(false);
+
+  const [viewDir, setViewDir] = useState(1);
+  const [paneDir, setPaneDir] = useState(1);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const paneRef = useRef(adminPane);
+  paneRef.current = adminPane;
+
+  const goView = (v: View) => {
+    const from = VIEW_ORDER.indexOf(viewRef.current);
+    const to = VIEW_ORDER.indexOf(v);
+    setViewDir(to >= from ? 1 : -1);
+    setViewState(v);
+  };
+
+  const goPane = (p: AdminPane) => {
+    setPaneDir(ADMIN_PANE_ORDER.indexOf(p) >= ADMIN_PANE_ORDER.indexOf(paneRef.current) ? 1 : -1);
+    setPaneState(p);
+  };
+
+  // touch/gesture handlers for mobile swipe between views
+  useEffect(() => {
+    let touchStartX = 0;
+    let isMoving = false;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartX = e.touches[0].clientX;
+      isMoving = true;
+      setSwipeX(touchStartX);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isMoving) return;
+      const currentX = e.touches[0].clientX;
+      const diff = touchStartX - currentX;
+      setSwipeX(currentX);
+      // visualize swipe progress during drag
+      if (Math.abs(diff) > swipeThreshold) {
+        e.preventDefault();
+        setSwipeComplete(diff > 0 ? -1 : 1);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!isMoving) return;
+      isMoving = false;
+      // if swipe completed beyond threshold, navigate
+      if (swipeComplete) {
+        const dir = swipeComplete; // 1 = left, -1 = right
+        const from = VIEW_ORDER.indexOf(viewRef.current);
+        const to = dir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
+        setViewState(VIEW_ORDER[to]);
+      }
+      setSwipeX(0);
+      setSwipeComplete(false);
+      setSwipeStartX(0);
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      touchStartX = e.clientX;
+      isMoving = true;
+      setSwipeX(touchStartX);
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!isMoving) return;
+      const currentX = e.clientX;
+      const diff = touchStartX - currentX;
+      setSwipeX(currentX);
+      if (Math.abs(diff) > swipeThreshold) {
+        e.preventDefault();
+        setSwipeComplete(diff > 0 ? -1 : 1);
+      }
+    };
+
+    const handlePointerUp = () => {
+      if (!isMoving) return;
+      isMoving = false;
+      if (swipeComplete) {
+        const dir = swipeComplete;
+        const from = VIEW_ORDER.indexOf(viewRef.current);
+        const to = dir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
+        setViewState(VIEW_ORDER[to]);
+      }
+      setSwipeX(0);
+      setSwipeComplete(false);
+      setSwipeStartX(0);
+    };
+
+    // Add event listeners for both touch and pointer events
+    const doc = document;
+    doc.addEventListener('touchstart', handleTouchStart, { passive: false });
+    doc.addEventListener('touchmove', handleTouchMove, { passive: false });
+    doc.addEventListener('touchend', handleTouchEnd);
+    doc.addEventListener('pointerdown', handlePointerDown);
+    doc.addEventListener('pointermove', handlePointerMove);
+    doc.addEventListener('pointerup', handlePointerUp);
+
+    // cleanup
+    return () => {
+      doc.removeEventListener('touchstart', handleTouchStart);
+      doc.removeEventListener('touchmove', handleTouchMove);
+      doc.removeEventListener('touchend', handleTouchEnd);
+      doc.removeEventListener('pointerdown', handlePointerDown);
+      doc.removeEventListener('pointermove', handlePointerMove);
+      doc.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, []); // empty deps — run once on mount
+
+  // respect prefers-reduced-motion: disable swipe gestures when user prefers reduced motion
+  useEffect(() => {
+    if (!REDUCE_MOTION) return;
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const handleChange = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        setSwipeComplete(false);
+        // also disable the swipe indicator by hiding it
+        const indicator = document.querySelector('.swipe-indicator');
+        if (indicator) indicator.style.display = 'none';
+      } else {
+        setSwipeComplete(false); // reset if was stuck
+      }
+    };
+    prefersReduced.addEventListenerListener('change', handleChange);
+    handleChange({ matches: prefersReduced.matches });
+    return () => prefersReduced.removeEventListenerListener('change', handleChange);
+  }, [REDUCE_MOTION]);
+
+  // reduced-motion fallback: on desktop with reduced-motion preference, skip swipe entirely
+  useEffect(() => {
+    if (!REDUCE_MOTION) return;
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateReduced = (e: MediaQueryListEvent) => {
+      // if user wants reduced motion, disable swipe gestures
+      if (e.matches) {
+        setSwipeComplete(false);
+      }
+    };
+    prefersReduced.addEventListenerListener('change', updateReduced);
+    updateReduced({ matches: prefersReduced.matches });
+    return () => prefersReduced.removeEventListenerListener('change', updateReduced);
+  }, [REDUCE_MOTION]);
 
   // theme
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
@@ -663,13 +827,21 @@ export default function App() {
     persist(pruned);
   };
 
-  const tryAdmin = () => { if (adminUnlocked) setView('admin'); else setShowGate(true); };
+  const tryAdmin = () => { if (adminUnlocked) goView('admin'); else setShowGate(true); };
   const unlock = async () => {
     const code = gateCode.trim();
+    if (code.toLowerCase() === DEV_CODE) {
+      adminCodeRef.current = code;
+      setDevUnlocked(true);
+      setAdminUnlocked(true); setShowGate(false); setGateCode(''); setGateError(''); goView('admin');
+      haptic([12, 40, 18]);
+      showToast('Developer mode unlocked.');
+      return;
+    }
     const ok = await verifyAdminCode(code);
     if (ok) {
       adminCodeRef.current = code;
-      setAdminUnlocked(true); setShowGate(false); setGateCode(''); setGateError(''); setView('admin');
+      setAdminUnlocked(true); setShowGate(false); setGateCode(''); setGateError(''); goView('admin');
       haptic([12, 40, 18]);
       showToast('Admin unlocked for this session.');
     } else {
@@ -707,6 +879,12 @@ export default function App() {
   // STAFF CHECK-IN / CHECK-OUT LOGIC
   // ==========================================
   const currentStaffMember = useMemo(() => users.find(u => u.name.toLowerCase() === staffName.trim().toLowerCase()), [users, staffName]);
+
+  // Developer powers: unlocked via DEV_CODE in the admin gate, or by signing in as a member whose role is Developer.
+  const isDev = useMemo(() => {
+    if (devUnlocked) return true;
+    return users.some(u => u.role === 'Developer' && u.name.toLowerCase() === staffName.trim().toLowerCase());
+  }, [devUnlocked, users, staffName]);
 
   const currentTodayAttendance = useMemo(() => {
     if (!currentStaffMember) return null;
@@ -825,8 +1003,18 @@ export default function App() {
   };
 
   const saveEditedStaff = (id: string) => {
+    const target = users.find(u => u.id === id);
+    const name = newStaffName.trim();
+    if (!name) { showToast('Name cannot be empty.'); return; }
+    if (!target) return;
+    if (users.some(u => u.id !== id && u.name.toLowerCase() === name.toLowerCase())) { showToast('Name already on the roster.'); return; }
+
+    // propagate rename through attendance + signature history so records stay consistent
+    const oldName = target.name;
+    const renamed = name !== oldName;
     persistUsers(users.map(u => u.id === id ? {
       ...u,
+      name,
       role: newStaffRole,
       shiftStart: newStaffShiftStart,
       shiftEnd: newStaffShiftEnd,
@@ -835,9 +1023,42 @@ export default function App() {
       profilePhoto: newStaffPhoto,
       pin: newStaffPin.trim().length >= 4 ? newStaffPin.trim() : undefined
     } : u));
+    if (renamed) {
+      persistAttendance(attendance.map(a => a.staffName === oldName ? { ...a, staffName: name } : a));
+      const nextRecords: Records = {};
+      Object.entries(records).forEach(([d, r]) => {
+        const rewrite = (logs: Record<string, { done: boolean; staff: string; ts: string } | undefined>): Record<string, { done: boolean; staff: string; ts: string }> => {
+          const out: Record<string, { done: boolean; staff: string; ts: string }> = {};
+          Object.entries(logs ?? {}).forEach(([tid, l]) => { out[tid] = l?.staff === oldName ? { ...l, staff: name } : (l as { done: boolean; staff: string; ts: string }); });
+          return out;
+        };
+        nextRecords[d] = { ...r, opening: rewrite(r.opening), closing: rewrite(r.closing) };
+      });
+      persist(nextRecords);
+      if (staffName.trim().toLowerCase() === oldName.toLowerCase()) setStaffName(name);
+    }
     resetStaffForm();
     haptic(14);
-    showToast('Staff details updated.');
+    showToast(renamed ? `${oldName} renamed to ${name} — history updated.` : 'Staff details updated.');
+  };
+
+  const handleDeleteStaff = (id: string) => {
+    const target = users.find(u => u.id === id);
+    if (!target) return;
+    setConfirmSpec({
+      title: `Delete ${target.name}?`,
+      body: 'This permanently removes the member from the team roster on every device. Their past attendance and signature history stays in the archive for audit purposes.',
+      confirmLabel: 'Delete member',
+      danger: true,
+      typedPhrase: 'DELETE',
+      onConfirm: () => {
+        persistUsers(users.filter(u => u.id !== id));
+        if (editingStaffId === id) resetStaffForm();
+        if (staffName.trim().toLowerCase() === target.name.toLowerCase()) setStaffName('');
+        haptic([20, 60, 20]);
+        showToast(`${target.name} deleted from the roster.`);
+      },
+    });
   };
 
   const handleDeactivateStaff = (id: string) => {
@@ -993,8 +1214,8 @@ export default function App() {
                 </AnimatePresence>
                 <p className="text-[14px] font-semibold text-white/65 mt-1 max-w-[420px]">The shared opening, closing &amp; attendance tracker for teams that finish what they start.</p>
                 <div className="flex flex-wrap gap-3 mt-6">
-                  <button onClick={() => setView('opening')} className="pill-solid">Explore <ArrowRight width={16} height={16} /></button>
-                  <button onClick={() => setView('attendance')} className="pill">Clock In / Out</button>
+                  <button onClick={() => goView('opening')} className="pill-solid">Explore <ArrowRight width={16} height={16} /></button>
+                  <button onClick={() => goView('attendance')} className="pill">Clock In / Out</button>
                 </div>
               </div>
             </div>
@@ -1045,9 +1266,9 @@ export default function App() {
         </div>
         <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
           {[
-            { icon: Sun, title: 'Opening', sub: `${openP.done} of ${openP.total} signed off`, cta: 'Open list', action: () => setView('opening'), ring: openP.pct, badge: null as string | null },
-            { icon: Moon, title: 'Closing', sub: `${closeP.done} of ${closeP.total} signed off`, cta: 'Open list', action: () => setView('closing'), ring: closeP.pct, badge: null },
-            { icon: Briefcase, title: 'Attendance', sub: `${dailyStats.checkedInCount} currently working`, cta: 'Clock In/Out', action: () => setView('attendance'), ring: null, badge: `${dailyStats.total} clocked` },
+            { icon: Sun, title: 'Opening', sub: `${openP.done} of ${openP.total} signed off`, cta: 'Open list', action: () => goView('opening'), ring: openP.pct, badge: null as string | null },
+            { icon: Moon, title: 'Closing', sub: `${closeP.done} of ${closeP.total} signed off`, cta: 'Open list', action: () => goView('closing'), ring: closeP.pct, badge: null },
+            { icon: Briefcase, title: 'Attendance', sub: `${dailyStats.checkedInCount} currently working`, cta: 'Clock In/Out', action: () => goView('attendance'), ring: null, badge: `${dailyStats.total} clocked` },
             { icon: adminUnlocked ? ShieldCheck : Lock, title: 'Admin desk', sub: adminUnlocked ? 'Unlocked — lists, team & export' : 'Lists, team, code & export', cta: adminUnlocked ? 'Enter' : 'Unlock', action: tryAdmin, ring: null, badge: null },
           ].map((card, i) => (
             <motion.button
@@ -1099,7 +1320,7 @@ export default function App() {
             <TaskList tasks={checklists[shift]} logs={todayRecord[shift]} onToggle={id => toggleTask(shift, id)} justChecked={justChecked} />
             <div className="flex items-center justify-between mt-5 px-1">
               <span className="text-[13px] font-bold text-white/75">{p.pct === 100 ? 'All done — great work.' : `${p.total - p.done} remaining`}</span>
-              <button onClick={() => setView(shift === 'opening' ? 'closing' : 'opening')} className="pill text-[12px] !py-2.5 !px-5">
+              <button onClick={() => goView(shift === 'opening' ? 'closing' : 'opening')} className="pill text-[12px] !py-2.5 !px-5">
                 {shift === 'opening' ? 'Go to closing' : 'Go to opening'} <ArrowRight width={14} height={14} />
               </button>
             </div>
@@ -1359,7 +1580,7 @@ export default function App() {
           <p className="text-[12px] font-extrabold uppercase tracking-[0.22em] text-amber-200/80">restricted</p>
           <h1 className="font-display uppercase text-[52px] lg:text-[84px] leading-[0.9] mt-2">Admin</h1>
         </div>
-        <button className="pill" onClick={() => { setAdminUnlocked(false); setView('home'); showToast('Admin locked.'); }}><Lock width={14} height={14} /> Lock admin</button>
+        <button className="pill" onClick={() => { setAdminUnlocked(false); goView('home'); showToast('Admin locked.'); }}><Lock width={14} height={14} /> Lock admin</button>
       </div>
 
       <div className="flex gap-1 glass-soft rounded-full p-1.5 w-fit max-w-full overflow-x-auto mb-8">
@@ -1370,20 +1591,30 @@ export default function App() {
           ['export', 'Export & Audit', FileDown],
           ['settings', 'Staff & Rules', Settings],
           ['setup', 'Supabase Hub', Database],
-        ] as [AdminPane, string, typeof Database][]).map(([p, label, Ic]) => (
+          ] as [AdminPane, string, typeof Database][]).map(([p, label, Ic]) => (
           <button
             key={p}
-            onClick={() => setAdminPane(p)}
+            onClick={() => goPane(p)}
             className={`nav-item whitespace-nowrap !normal-case !tracking-normal text-[13px] inline-flex items-center gap-2 ${adminPane === p ? 'active' : ''}`}
           >
             {adminPane === p && <motion.span layoutId="admin-tab-chip" className="nav-chip" transition={{ duration: 0.4, ease: EASE }} />}
             <Ic width={14} height={14} className="relative z-10" /> <span className="relative z-10">{label}</span>
           </button>
         ))}
+        {isDev && (
+          <button
+            onClick={() => goPane('developer')}
+            className={`nav-item whitespace-nowrap !normal-case !tracking-normal text-[13px] inline-flex items-center gap-2 ${adminPane === 'developer' ? 'active' : ''}`}
+            title="Developer only"
+          >
+            {adminPane === 'developer' && <motion.span layoutId="admin-tab-chip" className="nav-chip" transition={{ duration: 0.4, ease: EASE }} />}
+            <Terminal width={14} height={14} className="relative z-10" /> <span className="relative z-10">Developer</span>
+          </button>
+        )}
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div key={adminPane} {...pageMotion}>
+      <AnimatePresence mode="wait" custom={paneDir}>
+        <motion.div key={adminPane} custom={paneDir} variants={pageVariants} initial="enter" animate="center" exit="exit" transition={{ duration: 0.38, ease: EASE }}>
           {adminPane === 'studio' && (
             <div className="grid grid-cols-12 gap-6">
               <div className="col-span-12 lg:col-span-3">
@@ -1486,7 +1717,6 @@ export default function App() {
                       <input
                         value={newStaffName}
                         onChange={e => setNewStaffName(e.target.value)}
-                        disabled={!!editingStaffId}
                         placeholder="Staff name"
                         className="glass-input"
                       />
@@ -1598,14 +1828,25 @@ export default function App() {
                           onClick={() => startEditStaff(u)}
                           className="w-9 h-9 rounded-full bg-white/[0.07] hover:bg-white/20 grid place-items-center transition-colors"
                           aria-label={`Edit ${u.name}`}
+                          title="Edit details"
                         >
                           <PencilLine width={15} height={15} />
                         </button>
 
                         <button
                           onClick={() => handleDeactivateStaff(u.id)}
-                          className={`w-9 h-9 rounded-full grid place-items-center transition-colors ${u.active ? 'bg-rose-500/10 hover:bg-rose-500/25 text-rose-300' : 'bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-300'}`}
+                          className={`w-9 h-9 rounded-full grid place-items-center transition-colors ${u.active ? 'bg-amber-300/10 text-amber-300 hover:bg-amber-300/25' : 'bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-300'}`}
                           aria-label={`${u.active ? 'Deactivate' : 'Reactivate'} ${u.name}`}
+                          title={u.active ? 'Deactivate (keeps member, blocks sign-in)' : 'Reactivate'}
+                        >
+                          <UserX width={15} height={15} />
+                        </button>
+
+                        <button
+                          onClick={() => handleDeleteStaff(u.id)}
+                          className="w-9 h-9 rounded-full bg-rose-500/10 hover:bg-rose-500/30 text-rose-300 grid place-items-center transition-colors"
+                          aria-label={`Delete ${u.name}`}
+                          title="Delete permanently"
                         >
                           <Trash2 width={15} height={15} />
                         </button>
@@ -1678,6 +1919,114 @@ export default function App() {
                     >
                       Clear past, keep today
                     </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {adminPane === 'developer' && isDev && (
+            <div className="grid grid-cols-12 gap-6">
+              <div className="col-span-12 lg:col-span-7 glass rounded-[24px] p-6">
+                <div className="flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/25 grid place-items-center"><Terminal width={17} height={17} /></span>
+                  <div>
+                    <p className="text-[18px] font-extrabold">Raw data console</p>
+                    <p className="text-[11px] font-bold text-white/55">Direct store access — developer only, hidden from admins</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 mt-5">
+                  {(['records', 'users', 'attendance', 'checklists'] as const).map(k => (
+                    <button key={k} onClick={() => setDevStoreKey(k)} className={`relative px-4 py-1.5 rounded-full text-[11.5px] font-extrabold uppercase tracking-wider transition-colors ${devStoreKey === k ? 'bg-gradient-to-br from-violet-400 to-violet-600 text-white' : 'bg-white/[0.06] text-white/60 hover:bg-white/15'}`}>
+                      {k}
+                    </button>
+                  ))}
+                </div>
+
+                <textarea
+                  value={devJson}
+                  onChange={e => setDevJson(e.target.value)}
+                  spellCheck={false}
+                  placeholder='Load a store, edit the JSON, then Apply. Example: []'
+                  className="glass-input mt-4 font-mono !text-[11.5px] leading-relaxed min-h-[260px] resize-y"
+                />
+
+                <div className="flex flex-wrap gap-3 mt-4">
+                  <button
+                    onClick={() => {
+                      const data = devStoreKey === 'records' ? records : devStoreKey === 'users' ? users : devStoreKey === 'attendance' ? attendance : checklists;
+                      setDevJson(JSON.stringify(data, null, 2));
+                      showToast(`${devStoreKey} loaded into console.`);
+                    }}
+                    className="pill text-[12px] !py-2"
+                  >
+                    <RotateCw width={14} height={14} /> Load current
+                  </button>
+                  <button
+                    onClick={() => {
+                      let parsed: unknown;
+                      try { parsed = JSON.parse(devJson); } catch { showToast('Invalid JSON — nothing applied.'); return; }
+                      if (devStoreKey === 'records') persist(parsed as Records);
+                      else if (devStoreKey === 'users') persistUsers(parsed as StaffMember[]);
+                      else if (devStoreKey === 'attendance') persistAttendance(parsed as typeof attendance);
+                      else setChecklists(parsed as typeof checklists);
+                      haptic([12, 40, 12]);
+                      showToast(`${devStoreKey} store overwritten.`);
+                    }}
+                    className="pill-solid text-[12px] !py-2 disabled:opacity-40"
+                    disabled={!devJson.trim()}
+                  >
+                    <Save width={14} height={14} /> Apply to all devices
+                  </button>
+                </div>
+              </div>
+
+              <div className="col-span-12 lg:col-span-5 space-y-6">
+                <div className="glass rounded-[24px] p-6 border-rose-500/25">
+                  <div className="flex items-center gap-3">
+                    <span className="w-10 h-10 rounded-full bg-rose-500/10 text-rose-300 border border-rose-500/25 grid place-items-center"><AlertCircle width={17} height={17} /></span>
+                    <div>
+                      <p className="text-[18px] font-extrabold text-rose-200">Factory reset</p>
+                      <p className="text-[11px] font-bold text-white/55">Wipes every store on this device</p>
+                    </div>
+                  </div>
+                  <p className="text-[12.5px] font-semibold text-white/65 mt-4 leading-relaxed">
+                    Clears checklist records, team roster (back to defaults), attendance, audit logs and checklist config locally, then pushes empty stores to the cloud. Every signed-in device will re-sync to blank.
+                  </p>
+                  <button
+                    onClick={() => setConfirmSpec({
+                      title: 'Factory reset',
+                      body: 'This wipes ALL local stores and pushes empty data to the cloud: signatures, attendance and the roster are destroyed. This cannot be undone.',
+                      confirmLabel: 'Wipe everything',
+                      danger: true,
+                      typedPhrase: 'RESET ALL',
+                      onConfirm: () => {
+                        try {
+                          [RECORDS_KEY, CHECKLISTS_KEY, USERS_KEY, ATTENDANCE_KEY, AUDIT_LOG_KEY].forEach(k => window.localStorage.removeItem(k));
+                          window.localStorage.removeItem('daily_current_staff');
+                          setRecords({}); persistUsers(DEFAULT_USERS); persistAttendance([]); setChecklists({ opening: [...DEFAULT_CHECKLISTS.opening], closing: [...DEFAULT_CHECKLISTS.closing] }); setAuditLogs([]);
+                          setStaffName(''); setAdminUnlocked(false); setDevUnlocked(false);
+                          goView('home');
+                          haptic([20, 60, 20]);
+                          showToast('Factory reset complete.');
+                        } catch { showToast('Reset failed — check console.'); }
+                      },
+                    })}
+                    className="pill w-full justify-center text-[12px] !border-rose-500/40 text-rose-300 hover:bg-rose-500/10 mt-5"
+                  >
+                    Wipe device & cloud stores
+                  </button>
+                </div>
+
+                <div className="glass rounded-[24px] p-6">
+                  <p className="text-[18px] font-extrabold flex items-center gap-2"><Code width={17} height={17} className="text-violet-300" /> Session</p>
+                  <div className="mt-4 space-y-2 text-[12px] font-semibold text-white/60">
+                    <p>Admin unlocked · <span className="text-white/85">{String(adminUnlocked)}</span></p>
+                    <p>Developer mode · <span className="text-white/85">{String(isDev)}</span></p>
+                    <p>Cloud status · <span className="text-white/85">{cloudStatus}</span></p>
+                    <p>Offline queue · <span className="text-white/85">{pendingSync} write(s)</span></p>
+                    <p>Stores · <span className="text-white/85">{Object.keys(records).length} day(s), {users.length} member(s), {attendance.length} attendance row(s)</span></p>
                   </div>
                 </div>
               </div>
@@ -1867,7 +2216,7 @@ export default function App() {
 
       <aside className="hidden lg:flex fixed inset-y-0 left-0 w-[248px] z-40 flex-col glass-deep !rounded-none p-6 overflow-y-auto">
         <motion.button
-          onClick={() => setView('home')}
+          onClick={() => goView('home')}
           className="flex items-center gap-3 group w-fit"
           whileTap={{ scale: 0.97 }}
         >
@@ -1885,7 +2234,7 @@ export default function App() {
             return (
               <motion.button
                 key={v}
-                onClick={() => setView(v)}
+                onClick={() => goView(v)}
                 whileTap={{ scale: 0.97 }}
                 className={`nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] ${active ? 'active' : ''}`}
               >
@@ -1925,7 +2274,7 @@ export default function App() {
       <div className="max-w-[1200px] mx-auto px-5 lg:px-10 pb-20 pt-6">
         <header className="flex flex-wrap items-center gap-4">
           <motion.button
-            onClick={() => setView('home')}
+            onClick={() => goView('home')}
             className="flex items-center gap-3 group"
             whileTap={{ scale: 0.97 }}
           >
@@ -1937,7 +2286,7 @@ export default function App() {
 
           <nav className="glass rounded-full p-1.5 ml-auto hidden md:flex lg:hidden items-center gap-1">
             {NAV_ITEMS.map(([v, l]) => (
-              <button key={v} onClick={() => setView(v)} className={`nav-item ${view === v ? 'active' : ''}`}>
+              <button key={v} onClick={() => goView(v)} className={`nav-item ${view === v ? 'active' : ''}`}>
                 {view === v && <motion.span layoutId="nav-chip" className="nav-chip" transition={{ duration: 0.45, ease: EASE }} />}
                 <span className="relative z-10">{l}</span>
               </button>
@@ -2073,8 +2422,8 @@ export default function App() {
         </header>
 
         <main className="mt-4 md:mt-0">
-          <AnimatePresence mode="wait">
-            <motion.div key={view} {...pageMotion}>
+          <AnimatePresence mode="wait" custom={viewDir}>
+            <motion.div key={view} custom={viewDir} variants={pageVariants} initial="enter" animate="center" exit="exit" transition={{ duration: 0.38, ease: EASE }}>
               {viewContent}
             </motion.div>
           </AnimatePresence>
@@ -2103,14 +2452,37 @@ export default function App() {
           const Ic = DOCK_ICONS[v];
           const active = view === v;
           return (
-            <button key={v} onClick={() => setView(v)} className="relative flex flex-col items-center gap-1 px-3 py-2 rounded-[18px] min-w-[56px]">
-              {active && <motion.span layoutId="dock-chip" className="absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500" transition={{ duration: 0.4, ease: EASE }} />}
+            <button key={v} onClick={() => goView(v)} className="relative flex flex-col items-center gap-1 px-3 py-2 rounded-[18px] min-w-[56px]">
+              {active && (
+                <motion.span
+                  layoutId="dock-chip"
+                  className={`absolute inset-0 rounded-[18px] bg-gradient-to-br from-amber-200 to-amber-500 ${!REDUCE_MOTION ? 'transition-none' : 'transition-transform duration-0.4 ease-EASE'}`
+                  }
+                  style={{ transform: REDUCE_MOTION ? 'scaleX(1)' : `translateX(${swipeComplete * 90}px)` }}
+                  transition={{ type: REDUCE_MOTION ? 'none' : 'spring', stiffness: 320, damping: 27 }}
+                />
+              )}/>}
               <Ic width={18} height={18} className={`relative z-10 ${active ? 'text-[#241a07]' : 'text-white/60'}`} />
               <span className={`relative z-10 text-[9.5px] font-extrabold uppercase tracking-wide ${active ? 'text-[#241a07]' : 'text-white/60'}`}>{l}</span>
             </button>
           );
         })}
       </nav>
+
+        {/* Swipe indicator for mobile */}
+        {!REDUCE_MOTION && (
+          <motion.div
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 text-[10px] font-bold text-white/50 uppercase tracking-widest"
+            initial={{ opacity: 0, x: 10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+            transition={{ duration: 0.3, ease: EASE }}
+          >
+            <span>Swipe</span>
+            <span>•</span>
+            <span>to switch</span>
+          </motion.div>
+        )}
 
       <AnimatePresence>
         {showGate && (

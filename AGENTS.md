@@ -34,14 +34,18 @@ PWA-style daily checklist app. Single-file Vite build (vite-plugin-singlefile).
 - Commit messages: short imperative summary of the change.
 
 ## Session Continuity Protocol
+IMPORTANT: NEVER push to GitHub unless the user explicitly says "push" in that
+session. After making changes: build locally (`npm run build`) or start
+`npm run dev` for preview, and let the user review first.
+
 When finishing a work session in this repo:
 1. Update `TODO.md` (mark done items, add new ones).
 2. Update the "Current Status" section below.
-3. Commit changes if user asks.
+3. Commit/push ONLY if user asked.
 
 ### Current Status
-Last worked on: 2026-08-25 — fixed light theme (completed alpha remaps
-text-white/80·30, bg-white/15–25, ring/border gaps; darkened amber/emerald/
-rose/violet accents for parchment contrast), reduced backdrop blur on mobile
-for smoothness, added tactile press feedback. Deployed to Pages OK.
-Git auth: use `gh` CLI (logged in as Willsonraiii) — GCM popup hangs.
+Last worked on: 2026-08-25 — root-caused light theme: `--ivory` (inherited
+text color) is now flipped to ink in light mode; btn-ivory becomes ink button,
+nav/date-tile active states use literal #f7f3ea. Added desktop sidebar shell
+(lg+ fixed left rail, layoutId="side-chip"), top pill nav now md..lg only.
+SW app shell is network-first. Git auth via gh CLI.
