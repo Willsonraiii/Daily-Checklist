@@ -486,59 +486,7 @@ export default function App() {
     setPaneState(p);
   };
 
-  // touch/gesture handlers for mobile swipe between views — fixed stale closure + scroll jank
-  useEffect(() => {
-    if (REDUCE_MOTION) return; // respect reduced motion: no swipe navigation
-    let touchStartX = 0;
-    let isMoving = false;
-    let pendingDir = 0; // 0 none, 1 = swipe right (prev), -1 = swipe left (next)
-
-    const handleTouchStart = (e: TouchEvent) => {
-      touchStartX = e.touches[0].clientX;
-      isMoving = true;
-      pendingDir = 0;
-      setSwipeX(touchStartX);
-    };
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (!isMoving) return;
-      const currentX = e.touches[0].clientX;
-      const diff = touchStartX - currentX;
-      setSwipeX(currentX);
-      if (Math.abs(diff) > swipeThreshold) {
-        pendingDir = diff > 0 ? -1 : 1;
-        setSwipeComplete(pendingDir);
-      } else {
-        pendingDir = 0;
-        setSwipeComplete(0);
-      }
-    };
-
-    const handleTouchEnd = () => {
-      if (!isMoving) return;
-      isMoving = false;
-      if (pendingDir !== 0) {
-        const from = VIEW_ORDER.indexOf(viewRef.current);
-        const to = pendingDir > 0 ? Math.max(0, from - 1) : Math.min(VIEW_ORDER.length - 1, from + 1);
-        goView(VIEW_ORDER[to]);
-      }
-      pendingDir = 0;
-      setSwipeX(0);
-      setSwipeComplete(0);
-      setSwipeStartX(0);
-    };
-
-    const doc = document;
-    doc.addEventListener('touchstart', handleTouchStart, { passive: true });
-    doc.addEventListener('touchmove', handleTouchMove, { passive: true });
-    doc.addEventListener('touchend', handleTouchEnd);
-
-    return () => {
-      doc.removeEventListener('touchstart', handleTouchStart);
-      doc.removeEventListener('touchmove', handleTouchMove);
-      doc.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, []); // empty deps — run once on mount
+  // iOS bar-only swipe: no document-wide swipe — only toggle bars & dock handle drag (see admin/editor/dock drag handlers)
 
   // sync with OS prefers-reduced-motion — fixed addEventListenerListener crash
   useEffect(() => {
@@ -560,7 +508,7 @@ export default function App() {
     }
   }, []);
 
-  // theme — premium circular reveal
+  // theme — premium circular reveal (instant, no delay)
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
   const [themeTransition, setThemeTransition] = useState<null | { x: number; y: number; next: 'dark' | 'light' }>(null);
   const handleThemeToggle = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -570,10 +518,10 @@ export default function App() {
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
     haptic(10);
+    // swap instantly for iOS-like responsiveness, reveal animates over it
+    setTheme(next);
     setThemeTransition({ x, y, next });
-    // swap dataset mid-reveal for buttery morph
-    window.setTimeout(() => setTheme(next), 260);
-    window.setTimeout(() => setThemeTransition(null), 740);
+    window.setTimeout(() => setThemeTransition(null), 440);
   };
 
   // confirm dialog (replaces window.confirm)
@@ -1550,14 +1498,14 @@ export default function App() {
       <motion.div
         className="flex gap-1 glass-soft rounded-full p-1.5 w-fit max-w-full overflow-hidden mb-8 touch-pan-y select-none"
         drag="x"
-        dragElastic={0.12}
+        dragElastic={0.14}
         dragMomentum={false}
         dragConstraints={{ left: 0, right: 0 }}
         onDragEnd={(_, info) => {
           if (REDUCE_MOTION) return;
-          const threshold = 36;
+          const threshold = 28;
           if (Math.abs(info.offset.x) < threshold) return;
-          const dir = info.offset.x < 0 ? 1 : -1;
+          const dir = info.offset.x < 0 ? -1 : 1;
           const idx = ADMIN_PANE_ORDER.indexOf(adminPane);
           const next = Math.max(0, Math.min(ADMIN_PANE_ORDER.length - 1, idx + dir));
           if (next !== idx) { haptic(10); goPane(ADMIN_PANE_ORDER[next]); }
@@ -1608,7 +1556,7 @@ export default function App() {
                   onDragEnd={(_, info) => {
                     if (REDUCE_MOTION) return;
                     if (Math.abs(info.offset.x) < 28) return;
-                    const dir = info.offset.x < 0 ? 1 : -1;
+                    const dir = info.offset.x < 0 ? -1 : 1;
                     const order: Shift[] = ['opening', 'closing'];
                     const idx = order.indexOf(editorShift);
                     const next = Math.max(0, Math.min(1, idx + dir));
@@ -2446,15 +2394,15 @@ export default function App() {
         className="md:hidden mobile-dock glass-deep touch-pan-y select-none overflow-hidden"
         aria-label="Primary"
         drag="x"
-        dragElastic={0.12}
+        dragElastic={0.14}
         dragMomentum={false}
         dragConstraints={{ left: 0, right: 0 }}
         onDragEnd={(_, info) => {
           if (REDUCE_MOTION) return;
-          const threshold = 36;
+          const threshold = 28;
           if (Math.abs(info.offset.x) < threshold) return;
+          const dir = info.offset.x < 0 ? -1 : 1;
           const mobileOrder: View[] = ['home', 'opening', 'closing', 'attendance', 'history'];
-          const dir = info.offset.x < 0 ? 1 : -1;
           const idx = mobileOrder.indexOf(view as View);
           if (idx === -1) return;
           const next = Math.max(0, Math.min(mobileOrder.length - 1, idx + dir));
@@ -2480,15 +2428,15 @@ export default function App() {
         })}
       </motion.nav>
 
-      {/* Premium theme circular reveal — iOS-style */}
+      {/* Premium theme circular reveal — iOS-style, snappy */}
       <AnimatePresence>
         {themeTransition && (
           <motion.div
-            key={themeTransition.next}
+            key={themeTransition.next + '-' + themeTransition.x}
             initial={{ clipPath: `circle(0px at ${themeTransition.x}px ${themeTransition.y}px)` }}
-            animate={{ clipPath: `circle(${Math.hypot(window.innerWidth, window.innerHeight) * 1.1}px at ${themeTransition.x}px ${themeTransition.y}px)` }}
+            animate={{ clipPath: `circle(${Math.hypot(window.innerWidth, window.innerHeight) * 1.15}px at ${themeTransition.x}px ${themeTransition.y}px)` }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.62, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
             className="fixed inset-0 z-[60] pointer-events-none"
             style={{
               background: themeTransition.next === 'light'
