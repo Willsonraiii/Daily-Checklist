@@ -44,8 +44,14 @@ When finishing a work session in this repo:
 3. Commit/push ONLY if user asked.
 
 ### Current Status
-Last worked on: 2026-08-25 — root-caused light theme: `--ivory` (inherited
-text color) is now flipped to ink in light mode; btn-ivory becomes ink button,
-nav/date-tile active states use literal #f7f3ea. Added desktop sidebar shell
-(lg+ fixed left rail, layoutId="side-chip"), top pill nav now md..lg only.
-SW app shell is network-first. Git auth via gh CLI.
+Last worked on: 2026-09-15 — added header date/time pill (Nepali ⇄ English,
+between theme toggle and cloud pill): BS date + Nepal Time (UTC+5:45) in
+Devanagari via `nepali-date-converter` npm pkg, or English A.D./local; tap to
+switch, persisted (`daily_datetime_mode`), attendance clock follows it.
+Theme is now 3-mode: auto (06:00–18:00 local = light, else dark) / dark /
+light, cycled on tap, persisted (`daily_theme_mode`; `daily_theme` still holds
+the effective theme for back-compat). Earlier this session: offline admin
+unlock fix (tri-state RPC + cached SHA-256 code hash, admin writes join the
+offline queue) and hide-menu/drawer mode (`daily_menu_hidden`,
+`.mobile-dock.dock-hidden` CSS). Vite dev allows proxied hosts. Deploy:
+GitHub Actions on push to main → Pages.

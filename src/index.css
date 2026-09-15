@@ -397,9 +397,13 @@ input[type="time"].glass-input::-webkit-calendar-picker-indicator { filter: inve
 
 @media (max-width: 767px) {
   body { padding-bottom: 84px; }
+  body.dock-hidden { padding-bottom: 0; }
   /* unlayered rules beat Tailwind's md:hidden, so scope visibility here instead */
   .mobile-dock { display: flex; }
 }
+
+/* menu hidden (drawer mode) — overrides the media-query display:flex above */
+.mobile-dock.dock-hidden { display: none !important; }
 
 /* progress ring */
 .ring-track { stroke: rgba(245, 242, 234, 0.12); }
