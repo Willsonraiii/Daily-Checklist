@@ -46,9 +46,11 @@ export async function writeCloud(path: 'records' | 'attendance', value: unknown)
 // ---------- offline queue ----------
 // When a write fails (offline, flaky network) it lands here and is retried
 // automatically when connectivity returns. Last value per path wins.
+// Admin-gated paths (checklists/users/auditLogs) are queued too; they only
+// flush while an admin session is active (see flushQueue's adminCode param).
 const QUEUE_KEY = 'daily_check_sync_queue';
 
-type QueueItem = { path: 'records' | 'attendance'; value: unknown };
+type QueueItem = { path: CloudPath; value: unknown };
 
 function readQueue(): QueueItem[] {
   try {
@@ -60,7 +62,7 @@ function readQueue(): QueueItem[] {
   }
 }
 
-export function enqueueWrite(path: 'records' | 'attendance', value: unknown) {
+export function enqueueWrite(path: CloudPath, value: unknown) {
   const q = readQueue().filter(item => item.path !== path);
   q.push({ path, value });
   try { window.localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch { /* storage full */ }
@@ -70,16 +72,31 @@ export function queuedCount(): number {
   return readQueue().length;
 }
 
-export async function flushQueue(): Promise<number> {
+export async function flushQueue(adminCode?: string): Promise<number> {
   const q = readQueue();
   if (!q.length || !(await probeCloudOnce())) return 0;
   let flushed = 0;
-  const remaining = [...q];
-  for (const item of q) {
-    const ok = await writeCloud(item.path, item.value);
-    if (!ok) break;
-    flushed += 1;
-    remaining.shift();
+  let networkDown = false;
+  const remaining: QueueItem[] = [];
+  // Staff writes flush first — a rejected admin code must never block them.
+  const ordered = [
+    ...q.filter(item => item.path === 'records' || item.path === 'attendance'),
+    ...q.filter(item => item.path !== 'records' && item.path !== 'attendance'),
+  ];
+  for (const item of ordered) {
+    if (networkDown) { remaining.push(item); continue; }
+    let ok = false;
+    if (item.path === 'records' || item.path === 'attendance') {
+      ok = await writeCloud(item.path, item.value);
+      if (!ok) networkDown = true;
+    } else if (adminCode) {
+      const res = await adminWrite(adminCode, item.path, item.value);
+      if (res === 'ok') ok = true;
+      else if (res === 'offline') networkDown = true;
+      // 'wrong' → stays queued; it may flush after a fresh admin unlock
+    }
+    if (ok) flushed += 1;
+    else remaining.push(item);
   }
   try {
     if (remaining.length) window.localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining));
@@ -103,25 +120,85 @@ async function probeCloudOnce(): Promise<boolean> {
   }
 }
 
+// ---------- admin code (server-verified, offline-tolerant) ----------
+// The real check always runs server-side via Postgres functions. But when the
+// device is offline the RPC simply can't be reached — that used to surface as
+// "wrong code". Now: (1) results are tri-state so the UI can tell "wrong code"
+// apart from "no connection", and (2) after a successful online verification we
+// remember a SHA-256 hash of the code on this device, enough to re-unlock
+// offline without ever storing the code itself.
+export type AdminCodeResult = 'ok' | 'wrong' | 'offline';
+
+const ADMIN_HASH_KEY = 'daily_check_admin_code_hash';
+
+function isNetworkError(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { message?: string; cause?: { name?: string; message?: string } };
+  const msg = `${e.message ?? ''} ${e.cause?.name ?? ''} ${e.cause?.message ?? ''}`.toLowerCase();
+  return msg.includes('fetch') || msg.includes('network') || msg.includes('failed')
+    || msg.includes('timeout') || msg.includes('aborted') || msg.includes('load failed');
+}
+
+async function sha256Hex(text: string): Promise<string | null> {
+  try {
+    if (!('subtle' in crypto)) return null;
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
+}
+
+// Called after every successful ONLINE verification (and after a code change)
+// so the same code keeps working on this device while offline.
+export async function rememberAdminCode(code: string): Promise<void> {
+  const hash = await sha256Hex(code);
+  if (hash) { try { window.localStorage.setItem(ADMIN_HASH_KEY, hash); } catch { /* storage full */ } }
+}
+
+// Offline fallback: compare against the locally cached hash. Only codes that
+// were verified online on this device before will match.
+export async function verifyAdminCodeCached(code: string): Promise<boolean> {
+  try {
+    const stored = window.localStorage.getItem(ADMIN_HASH_KEY);
+    if (!stored) return false;
+    const hash = await sha256Hex(code);
+    return Boolean(hash) && hash === stored;
+  } catch { return false; }
+}
+
 // Admin-gated write: the Postgres function re-checks the code server-side
 // before touching checklists/users/auditLogs. The code never gets stored or synced anywhere.
-export async function adminWrite(code: string, path: 'checklists' | 'users' | 'auditLogs', value: unknown): Promise<boolean> {
-  const { data, error } = await supabase.rpc('admin_write', { p_code: code, p_key: path, p_value: value });
-  if (error) return false;
-  return Boolean(data);
+export async function adminWrite(code: string, path: 'checklists' | 'users' | 'auditLogs', value: unknown): Promise<AdminCodeResult> {
+  if (!navigator.onLine) return 'offline';
+  try {
+    const { data, error } = await supabase.rpc('admin_write', { p_code: code, p_key: path, p_value: value });
+    if (error) return isNetworkError(error) ? 'offline' : 'wrong';
+    return data ? 'ok' : 'wrong';
+  } catch (err) {
+    return isNetworkError(err) ? 'offline' : 'wrong';
+  }
 }
 
 // Verify a code without ever fetching the stored hash/value to the client.
-export async function verifyAdminCode(code: string): Promise<boolean> {
-  const { data, error } = await supabase.rpc('verify_admin_code', { code });
-  if (error) return false;
-  return Boolean(data);
+export async function verifyAdminCode(code: string): Promise<AdminCodeResult> {
+  if (!navigator.onLine) return 'offline';
+  try {
+    const { data, error } = await supabase.rpc('verify_admin_code', { code });
+    if (error) return isNetworkError(error) ? 'offline' : 'wrong';
+    return data ? 'ok' : 'wrong';
+  } catch (err) {
+    return isNetworkError(err) ? 'offline' : 'wrong';
+  }
 }
 
-export async function changeAdminCode(oldCode: string, newCode: string): Promise<boolean> {
-  const { data, error } = await supabase.rpc('change_admin_code', { old_code: oldCode, new_code: newCode });
-  if (error) return false;
-  return Boolean(data);
+export async function changeAdminCode(oldCode: string, newCode: string): Promise<AdminCodeResult> {
+  if (!navigator.onLine) return 'offline';
+  try {
+    const { data, error } = await supabase.rpc('change_admin_code', { old_code: oldCode, new_code: newCode });
+    if (error) return isNetworkError(error) ? 'offline' : 'wrong';
+    return data ? 'ok' : 'wrong';
+  } catch (err) {
+    return isNetworkError(err) ? 'offline' : 'wrong';
+  }
 }
 
 export function subscribeCloud(cb: (data: CloudData) => void): () => void {

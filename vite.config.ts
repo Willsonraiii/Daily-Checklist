@@ -16,4 +16,8 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    // sandboxed dev previews are proxied under a different hostname
+    allowedHosts: true,
+  },
 });

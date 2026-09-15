@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardList,
-  Clock3, Download, FileDown, History, KeyRound, Lock, Moon, PencilLine, Plus,
-  Settings, ShieldCheck, Sun, Trash2, User, UserPlus, Wifi, X,
+  ArrowRight, CalendarDays, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardList,
+  Clock3, Download, FileDown, History, KeyRound, Lock, Menu, Moon, PanelLeftClose, PanelLeftOpen, PencilLine, Plus,
+  Settings, ShieldCheck, Sun, SunMoon, Trash2, User, UserPlus, Wifi, X,
   Briefcase, CheckCircle2, AlertCircle, UserCheck, Code, BellRing, Database, TrendingUp, Flame,
   Terminal, UserX, RotateCw, Save
 } from 'lucide-react';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
+import NepaliDate from 'nepali-date-converter';
 
 import {
   probeCloud, subscribeCloud, writeCloud, adminWrite, verifyAdminCode, changeAdminCode,
-  enqueueWrite, flushQueue,
+  enqueueWrite, flushQueue, queuedCount, rememberAdminCode, verifyAdminCodeCached,
   type CloudStatus,
 } from './lib/cloud';
 import { subscribeToPush, notifyManagers } from './lib/push';
@@ -131,6 +132,13 @@ function isWithinHistory(k: string) { const t = new Date(); t.setHours(0, 0, 0, 
 function emptyDay(date: string): DayRecord { return { date, opening: {}, closing: {} }; }
 function prettyTime(iso: string) { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 function haptic(pattern: number | number[] = 12) { try { navigator.vibrate?.(pattern); } catch { /* unsupported */ } }
+
+// ---------- nepali (bikram sambat) date & time helpers ----------
+const NP_DIGITS = ['०', '१', '२', '३', '४', '५', '६', '७', '८', '९'];
+function toNpDigits(s: string) { return s.replace(/\d/g, d => NP_DIGITS[Number(d)]); }
+function npDayPart(hour: number) { return hour < 4 ? 'राति' : hour < 12 ? 'बिहान' : hour < 16 ? 'दिउँसो' : hour < 20 ? 'साँझ' : 'राति'; }
+// auto theme: "day" is 06:00–18:00 local time (approx. Kathmandu daylight)
+function isDaylight(d: Date) { const h = d.getHours(); return h >= 6 && h < 18; }
 
 function asStaff(v: unknown): StaffMember[] | null {
   if (!Array.isArray(v)) return null;
@@ -508,20 +516,72 @@ export default function App() {
     }
   }, []);
 
-  // theme — premium circular reveal (instant, no delay)
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => (window.localStorage.getItem('daily_theme') === 'light' ? 'light' : 'dark'));
+  // theme — 'auto' follows the time of day (06:00–18:00 local = day/light,
+  // else night/dark); tapping cycles auto → dark → light → auto so a manual
+  // pick always overrides until the user returns to auto.
+  const [themeMode, setThemeMode] = useState<'auto' | 'dark' | 'light'>(() => {
+    const saved = window.localStorage.getItem('daily_theme_mode');
+    return saved === 'dark' || saved === 'light' ? saved : 'auto';
+  });
   const [themeTransition, setThemeTransition] = useState<null | { x: number; y: number; next: 'dark' | 'light' }>(null);
+  const theme: 'dark' | 'light' = themeMode === 'auto' ? (isDaylight(liveClock) ? 'light' : 'dark') : themeMode;
   const handleThemeToggle = (e: React.MouseEvent<HTMLButtonElement>) => {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    if (REDUCE_MOTION) { setTheme(next); haptic(10); return; }
+    const order: ('auto' | 'dark' | 'light')[] = ['auto', 'dark', 'light'];
+    const nextMode = order[(order.indexOf(themeMode) + 1) % order.length];
+    setThemeMode(nextMode);
+    haptic(10);
+    const eff: 'dark' | 'light' = nextMode === 'auto' ? (isDaylight(new Date()) ? 'light' : 'dark') : nextMode;
+    showToast(nextMode === 'auto' ? `Theme: Auto — ${eff === 'light' ? 'day' : 'night'} for now.` : nextMode === 'dark' ? 'Theme: Dark.' : 'Theme: Light.');
+    if (REDUCE_MOTION || eff === theme) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = rect.left + rect.width / 2;
     const y = rect.top + rect.height / 2;
-    haptic(10);
     // swap instantly for iOS-like responsiveness, reveal animates over it
-    setTheme(next);
-    setThemeTransition({ x, y, next });
+    setThemeTransition({ x, y, next: eff });
     window.setTimeout(() => setThemeTransition(null), 440);
+  };
+  useEffect(() => { window.localStorage.setItem('daily_theme_mode', themeMode); }, [themeMode]);
+
+  // date & time display — nepali (bikram sambat + nepal time) ⇄ english (A.D.)
+  const [dtMode, setDtMode] = useState<'np' | 'en'>(() => (window.localStorage.getItem('daily_datetime_mode') === 'en' ? 'en' : 'np'));
+  useEffect(() => { window.localStorage.setItem('daily_datetime_mode', dtMode); }, [dtMode]);
+
+  // Nepal Standard Time (UTC+5:45) wall clock, independent of device timezone
+  const nptWall = useMemo(() => {
+    const shifted = new Date(liveClock.getTime() + 345 * 60000);
+    return new Date(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(), shifted.getUTCHours(), shifted.getUTCMinutes(), shifted.getUTCSeconds());
+  }, [liveClock]);
+
+  const dateTime = useMemo(() => {
+    const en = {
+      short: liveClock.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      long: liveClock.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }),
+      time: liveClock.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    };
+    if (dtMode === 'en') return en;
+    try {
+      const nd = new NepaliDate(nptWall);
+      const h = nptWall.getHours();
+      const time = `${toNpDigits(`${h % 12 || 12}:${String(nptWall.getMinutes()).padStart(2, '0')}`)} ${npDayPart(h)}`;
+      return { short: nd.format('MMMM DD', 'np'), long: nd.format('ddd, MMMM DD, YYYY', 'np'), time };
+    } catch { return en; } // outside the bundled BS table (≈1944–2034 A.D.) — fall back to english
+  }, [dtMode, liveClock, nptWall]);
+
+  // menu mode — pinned (always-visible nav) or hidden (hamburger opens a drawer).
+  // Remembered per device, like the theme.
+  const [menuHidden, setMenuHidden] = useState(() => window.localStorage.getItem('daily_menu_hidden') === '1');
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => {
+    window.localStorage.setItem('daily_menu_hidden', menuHidden ? '1' : '0');
+    document.body.classList.toggle('dock-hidden', menuHidden); // dock reserves body padding on mobile
+  }, [menuHidden]);
+  const toggleMenu = () => {
+    setDrawerOpen(false);
+    setMenuHidden(hidden => {
+      if (!hidden) showToast('Menu hidden — open it anytime with the menu button.');
+      return !hidden;
+    });
+    haptic(10);
   };
 
   // confirm dialog (replaces window.confirm)
@@ -590,6 +650,7 @@ export default function App() {
       if (status === 'connected') { setCloudStatus('connected'); attachCloud(); }
       else setCloudStatus(status);
 
+      setPendingSync(queuedCount());
       setLoading(false);
     };
     void load();
@@ -608,8 +669,10 @@ export default function App() {
 
   useEffect(() => {
     const onOnline = async () => {
-      const flushed = await flushQueue();
-      setPendingSync(0);
+      // flush staff writes always; admin-gated writes only when an admin
+      // session is active on this device (adminCodeRef is in-memory only)
+      const flushed = await flushQueue(adminCodeRef.current || undefined);
+      setPendingSync(queuedCount());
       if (flushed > 0) showToast(`Back online — ${flushed} pending update${flushed > 1 ? 's' : ''} synced.`);
     };
     const onOffline = () => showToast('You are offline — changes will sync automatically.');
@@ -672,9 +735,21 @@ export default function App() {
   const saveAdmin = async (path: 'checklists' | 'users' | 'auditLogs', value: unknown) => {
     const localKey = path === 'checklists' ? CHECKLISTS_KEY : path === 'users' ? USERS_KEY : AUDIT_LOG_KEY;
     void sharedSet(localKey, value);
-    if (!cloudOn) return;
-    const ok = await adminWrite(adminCodeRef.current, path, value);
-    if (!ok) showToast('Could not save to the shared database — try unlocking admin again.');
+    if (!cloudOn || !navigator.onLine) {
+      // offline / no cloud yet — keep the change locally and queue it; it flushes
+      // automatically once we're back online in an unlocked admin session.
+      enqueueWrite(path, value);
+      setPendingSync(queuedCount());
+      return;
+    }
+    const res = await adminWrite(adminCodeRef.current, path, value);
+    if (res === 'offline') {
+      enqueueWrite(path, value);
+      setPendingSync(queuedCount());
+      showToast('Saved on this device — will sync when back online.');
+    } else if (res !== 'ok') {
+      showToast('Could not save to the shared database — try unlocking admin again.');
+    }
   };
   const persistUsers = (next: StaffMember[]) => { setUsers(next); void saveAdmin('users', next); };
 
@@ -742,6 +817,7 @@ export default function App() {
   const tryAdmin = () => { if (adminUnlocked) goView('admin'); else setShowGate(true); };
   const unlock = async () => {
     const code = gateCode.trim();
+    if (!code) { setGateError('Enter the admin code.'); return; }
     if (code.toLowerCase() === DEV_CODE) {
       adminCodeRef.current = code;
       setDevUnlocked(true);
@@ -750,12 +826,27 @@ export default function App() {
       showToast('Developer mode unlocked.');
       return;
     }
-    const ok = await verifyAdminCode(code);
-    if (ok) {
+    const res = await verifyAdminCode(code);
+    // Offline: fall back to the hash of the last code verified online on this device.
+    const offlineOk = res === 'offline' && (await verifyAdminCodeCached(code));
+    if (res === 'ok' || offlineOk) {
       adminCodeRef.current = code;
       setAdminUnlocked(true); setShowGate(false); setGateCode(''); setGateError(''); goView('admin');
       haptic([12, 40, 18]);
-      showToast('Admin unlocked for this session.');
+      if (res === 'ok') {
+        void rememberAdminCode(code); // enables offline re-unlock on this device
+        showToast('Admin unlocked for this session.');
+        // push any admin writes queued while this device had no admin session
+        void flushQueue(code).then(n => {
+          setPendingSync(queuedCount());
+          if (n > 0) showToast(`Synced ${n} pending update${n > 1 ? 's' : ''}.`);
+        });
+      } else {
+        showToast('Unlocked offline — admin changes will sync when back online.');
+      }
+    } else if (res === 'offline') {
+      setGateError("You're offline — this code hasn't been verified on this device yet. Reconnect once to unlock.");
+      haptic(80);
     } else {
       setGateError('Wrong code. Ask the owner for access.');
       haptic(80);
@@ -1024,9 +1115,11 @@ export default function App() {
     const next = newCode.trim();
     if (next.length < 4) { setCodeMsg({ ok: false, text: 'Use at least 4 characters.' }); return; }
     if (next !== confirmCode.trim()) { setCodeMsg({ ok: false, text: 'The two codes do not match.' }); return; }
-    const ok = await changeAdminCode(adminCodeRef.current, next);
-    if (!ok) { setCodeMsg({ ok: false, text: 'Could not update — try unlocking admin again first.' }); return; }
+    const res = await changeAdminCode(adminCodeRef.current, next);
+    if (res === 'offline') { setCodeMsg({ ok: false, text: "You're offline — reconnect to change the admin code." }); return; }
+    if (res !== 'ok') { setCodeMsg({ ok: false, text: 'Could not update — try unlocking admin again first.' }); return; }
     adminCodeRef.current = next;
+    void rememberAdminCode(next); // this device now trusts the new code offline too
     setNewCode(''); setConfirmCode('');
     setCodeMsg({ ok: true, text: 'Admin code updated everywhere.' });
     showToast('Admin code updated.');
@@ -1332,8 +1425,8 @@ export default function App() {
 
           <div className="glass rounded-[24px] p-4 text-center min-w-[210px] relative overflow-hidden gold-edge">
             <p className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-amber-200/80">Live Terminal Clock</p>
-            <p className="text-[26px] font-extrabold leading-none mt-1.5 font-mono tracking-tight tabular-nums">{liveClock.toLocaleTimeString()}</p>
-            <p className="text-[11px] font-semibold text-white/55 mt-1.5">{liveClock.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</p>
+            <p className="text-[26px] font-extrabold leading-none mt-1.5 font-mono tracking-tight tabular-nums">{dateTime.time}</p>
+            <p className="text-[11px] font-semibold text-white/55 mt-1.5">{dateTime.long}</p>
           </div>
         </div>
 
@@ -2157,17 +2250,28 @@ export default function App() {
     <div className="stage font-body">
       <div className="orb orb-1" /><div className="orb orb-2" /><div className="orb orb-3" />
 
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-[248px] z-40 flex-col glass-deep !rounded-none p-6 overflow-y-auto">
-        <motion.button
-          onClick={() => goView('home')}
-          className="flex items-center gap-3 group w-fit"
-          whileTap={{ scale: 0.97 }}
-        >
-          <span className="w-11 h-11 rounded-[15px] bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07] grid place-items-center shadow-[0_14px_34px_-10px_rgba(201,154,69,0.6)] group-hover:rotate-[-6deg] transition-transform duration-300">
-            <ClipboardList width={21} height={21} strokeWidth={2.4} />
-          </span>
-          <span className="font-display uppercase text-[14px] leading-[1.1] text-left">Daily<br />Check</span>
-        </motion.button>
+      <aside className={`${menuHidden ? 'hidden' : 'hidden lg:flex'} fixed inset-y-0 left-0 w-[248px] z-40 flex-col glass-deep !rounded-none p-6 overflow-y-auto`}>
+        <div className="flex items-center justify-between">
+          <motion.button
+            onClick={() => goView('home')}
+            className="flex items-center gap-3 group"
+            whileTap={{ scale: 0.97 }}
+          >
+            <span className="w-11 h-11 rounded-[15px] bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07] grid place-items-center shadow-[0_14px_34px_-10px_rgba(201,154,69,0.6)] group-hover:rotate-[-6deg] transition-transform duration-300">
+              <ClipboardList width={21} height={21} strokeWidth={2.4} />
+            </span>
+            <span className="font-display uppercase text-[14px] leading-[1.1] text-left">Daily<br />Check</span>
+          </motion.button>
+          <motion.button
+            onClick={toggleMenu}
+            whileTap={{ scale: 0.9 }}
+            aria-label="Hide menu"
+            title="Hide menu — a drawer button takes its place"
+            className="w-9 h-9 rounded-full bg-white/[0.06] border border-white/10 grid place-items-center text-white/70 hover:bg-white/15 hover:text-white transition-colors shrink-0"
+          >
+            <PanelLeftClose width={15} height={15} />
+          </motion.button>
+        </div>
 
         <p className="mt-9 mb-2 px-3 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white/40">Workspace</p>
         <nav className="flex flex-col gap-1.5" aria-label="Primary">
@@ -2213,7 +2317,7 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="relative z-10 lg:ml-[248px]">
+      <div className={`relative z-10 ${menuHidden ? 'lg:ml-0' : 'lg:ml-[248px]'}`}>
       <div className="max-w-[1200px] mx-auto px-5 lg:px-10 pb-20 pt-6">
         <header className="flex flex-wrap items-center gap-4">
           <motion.button
@@ -2227,35 +2331,70 @@ export default function App() {
             <span className="font-display uppercase text-[15px] leading-[1.1]">Daily<br />Check</span>
           </motion.button>
 
-          <nav className="glass rounded-full p-1.5 ml-auto hidden md:flex lg:hidden items-center gap-1">
+          <nav className={`glass rounded-full p-1.5 ml-auto items-center gap-1 ${menuHidden ? 'hidden' : 'hidden md:flex lg:hidden'}`}>
             {NAV_ITEMS.map(([v, l]) => (
               <button key={v} onClick={() => goView(v)} className={`nav-item ${view === v ? 'active' : ''}`}>
                 {view === v && <motion.span layoutId="nav-chip" className="nav-chip" transition={{ duration: 0.45, ease: EASE }} />}
                 <span className="relative z-10">{l}</span>
               </button>
             ))}
+            <span className="w-px h-5 bg-white/15 mx-1" aria-hidden="true" />
+            <button onClick={toggleMenu} aria-label="Hide menu" title="Hide menu — a drawer button takes its place" className="nav-item !px-2.5 !normal-case !tracking-normal">
+              <PanelLeftClose width={15} height={15} className="relative z-10" />
+            </button>
           </nav>
 
-          <div className="flex items-center gap-2.5 ml-auto md:ml-0 relative">
+          <div className={`flex items-center gap-2.5 relative ${menuHidden ? 'ml-auto' : 'ml-auto md:ml-0'}`}>
+            {menuHidden && (
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => { setDrawerOpen(true); haptic(10); }}
+                aria-label="Open menu"
+                title="Open menu"
+                className="w-11 h-11 rounded-full grid place-items-center bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors"
+              >
+                <Menu width={17} height={17} />
+              </motion.button>
+            )}
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={handleThemeToggle}
-              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              aria-label={`Theme: ${themeMode === 'auto' ? 'auto, follows day and night' : themeMode} — tap to change`}
+              title={`Theme: ${themeMode === 'auto' ? 'Auto (day/night)' : themeMode === 'dark' ? 'Dark' : 'Light'} — tap to change`}
               className="w-11 h-11 rounded-full grid place-items-center bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors"
             >
               <AnimatePresence mode="wait" initial={false}>
                 <motion.span
-                  key={theme}
+                  key={themeMode}
                   initial={{ rotate: -90, opacity: 0, scale: 0.6 }}
                   animate={{ rotate: 0, opacity: 1, scale: 1 }}
                   exit={{ rotate: 90, opacity: 0, scale: 0.6 }}
                   transition={{ duration: 0.3, ease: EASE }}
                   className="grid place-items-center"
                 >
-                  {theme === 'dark' ? <Sun width={16} height={16} /> : <Moon width={16} height={16} />}
+                  {themeMode === 'auto' ? <SunMoon width={16} height={16} /> : theme === 'dark' ? <Moon width={16} height={16} /> : <Sun width={16} height={16} />}
                 </motion.span>
               </AnimatePresence>
+            </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={() => {
+                const next = dtMode === 'np' ? 'en' : 'np';
+                setDtMode(next);
+                haptic(10);
+                showToast(next === 'np' ? 'मिति र समय: नेपाली (वि.सं.)' : 'Date & time: English (A.D.)');
+              }}
+              aria-label={dtMode === 'np' ? 'Date and time in Nepali — Bikram Sambat and Nepal Time. Tap for English.' : 'Date and time in English. Tap for Nepali — Bikram Sambat and Nepal Time.'}
+              title={dtMode === 'np' ? 'Bikram Sambat · Nepal Time — tap for English' : 'English (A.D.) — tap for Bikram Sambat · Nepal Time'}
+              className="h-11 rounded-full bg-white/[0.04] border border-white/15 hover:bg-white/10 transition-colors flex items-center gap-2 px-3.5"
+            >
+              <CalendarClock width={15} height={15} className="text-amber-200/90 shrink-0" />
+              <span aria-hidden="true" className={`hidden sm:inline text-[11px] font-extrabold text-white/75 whitespace-nowrap ${dtMode === 'np' ? '' : 'uppercase tracking-[0.12em]'}`}>
+                {dateTime.long} · {dateTime.time}
+              </span>
+              <span aria-hidden="true" className={`sm:hidden text-[11px] font-extrabold text-white/75 whitespace-nowrap ${dtMode === 'np' ? '' : 'uppercase tracking-[0.12em]'}`}>
+                {dateTime.short} · {dateTime.time}
+              </span>
             </motion.button>
             <motion.button
               whileTap={{ scale: 0.94 }}
@@ -2391,7 +2530,7 @@ export default function App() {
       </div>
 
       <motion.nav
-        className="md:hidden mobile-dock glass-deep touch-pan-y select-none overflow-hidden"
+        className={`md:hidden mobile-dock glass-deep touch-pan-y select-none overflow-hidden ${menuHidden ? 'dock-hidden' : ''}`}
         aria-label="Primary"
         drag="x"
         dragElastic={0.14}
@@ -2426,6 +2565,14 @@ export default function App() {
             </button>
           );
         })}
+        <button
+          onClick={toggleMenu}
+          aria-label="Hide menu"
+          title="Hide menu — a drawer button takes its place"
+          className="relative flex flex-col items-center justify-center px-2.5 py-2 rounded-[18px] min-w-[44px] text-white/60 active:scale-95 transition-transform"
+        >
+          <PanelLeftClose width={17} height={17} />
+        </button>
       </motion.nav>
 
       {/* Premium theme circular reveal — iOS-style, snappy */}
@@ -2448,7 +2595,7 @@ export default function App() {
       </AnimatePresence>
 
         {/* Swipe indicator for mobile */}
-        {!REDUCE_MOTION && (
+        {!REDUCE_MOTION && !menuHidden && (
           <motion.div
             className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2 text-[10px] font-bold text-white/50 uppercase tracking-widest"
             initial={{ opacity: 0, x: 10 }}
@@ -2461,6 +2608,93 @@ export default function App() {
             <span>to switch</span>
           </motion.div>
         )}
+
+      {/* Menu drawer — full nav on demand, used while the menu is hidden */}
+      <AnimatePresence>
+        {drawerOpen && (
+          <>
+            <motion.div
+              className="modal-veil"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+              onClick={() => setDrawerOpen(false)}
+            />
+            <motion.aside
+              initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }}
+              transition={REDUCE_MOTION ? { duration: 0 } : { type: 'spring', stiffness: 360, damping: 34 }}
+              className="fixed inset-y-0 left-0 w-[290px] z-[80] glass-deep !rounded-none p-6 flex flex-col overflow-y-auto"
+              role="dialog"
+              aria-label="Menu"
+            >
+              <div className="flex items-center justify-between">
+                <motion.button
+                  onClick={() => { goView('home'); setDrawerOpen(false); }}
+                  className="flex items-center gap-3 group"
+                  whileTap={{ scale: 0.97 }}
+                >
+                  <span className="w-11 h-11 rounded-[15px] bg-gradient-to-br from-amber-200 to-amber-500 text-[#241a07] grid place-items-center shadow-[0_14px_34px_-10px_rgba(201,154,69,0.6)] group-hover:rotate-[-6deg] transition-transform duration-300">
+                    <ClipboardList width={21} height={21} strokeWidth={2.4} />
+                  </span>
+                  <span className="font-display uppercase text-[14px] leading-[1.1] text-left">Daily<br />Check</span>
+                </motion.button>
+                <button onClick={() => setDrawerOpen(false)} aria-label="Close menu" className="w-9 h-9 rounded-full bg-white/10 grid place-items-center hover:bg-white/25 transition-colors"><X width={14} height={14} /></button>
+              </div>
+
+              <p className="mt-8 mb-2 px-3 text-[10px] font-extrabold uppercase tracking-[0.18em] text-white/40">Workspace</p>
+              <nav className="flex flex-col gap-1.5" aria-label="Menu">
+                {NAV_ITEMS.map(([v, l]) => {
+                  const Ic = DOCK_ICONS[v];
+                  const active = view === v;
+                  return (
+                    <motion.button
+                      key={v}
+                      onClick={() => { goView(v); setDrawerOpen(false); }}
+                      whileTap={{ scale: 0.97 }}
+                      className={`nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] ${active ? 'active' : ''}`}
+                    >
+                      {active && <motion.span layoutId="side-chip" className="nav-chip !rounded-[15px]" transition={{ duration: 0.4, ease: EASE }} />}
+                      <Ic width={16} height={16} className="relative z-10 shrink-0" />
+                      <span className="relative z-10 font-extrabold">{l}</span>
+                    </motion.button>
+                  );
+                })}
+              </nav>
+
+              <div className="mt-auto flex flex-col gap-1.5 pt-6">
+                <motion.button
+                  onClick={() => { setDrawerOpen(false); tryAdmin(); }}
+                  whileTap={{ scale: 0.97 }}
+                  className={`nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] ${view === 'admin' ? 'active' : ''}`}
+                >
+                  {view === 'admin' && <motion.span layoutId="side-chip" className="nav-chip !rounded-[15px]" transition={{ duration: 0.4, ease: EASE }} />}
+                  {adminUnlocked ? <ShieldCheck width={16} height={16} className="relative z-10 shrink-0" /> : <Lock width={16} height={16} className="relative z-10 shrink-0" />}
+                  <span className="relative z-10 font-extrabold">{adminUnlocked ? 'Admin desk' : 'Unlock admin'}</span>
+                </motion.button>
+
+                <div className="glass-soft rounded-[15px] px-4 py-3 mt-3 flex items-center gap-3">
+                  {staffName ? <Avatar name={staffName} size={30} /> : <span className="w-[30px] h-[30px] rounded-full bg-white/10 grid place-items-center text-white/70"><User width={14} height={14} /></span>}
+                  <div className="min-w-0">
+                    <p className="text-[12.5px] font-extrabold truncate">{staffName || 'Not signed in'}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-white/50 flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full ${cloudOn && pendingSync === 0 ? 'bg-emerald-400' : cloudStatus === 'checking' ? 'bg-amber-300 pulse-soft' : 'bg-rose-400'}`} />
+                      {pendingSync > 0 ? `${pendingSync} queued` : cloudOn ? 'synced' : cloudStatus === 'checking' ? 'syncing' : 'local'}
+                    </p>
+                  </div>
+                </div>
+
+                <motion.button
+                  onClick={toggleMenu}
+                  whileTap={{ scale: 0.97 }}
+                  className="nav-item !flex !w-full !items-center !justify-start !gap-3 !rounded-[15px] !py-2.5 !px-4 !normal-case !tracking-normal !text-[13.5px] mt-1"
+                >
+                  <PanelLeftOpen width={16} height={16} className="relative z-10 shrink-0" />
+                  <span className="relative z-10 font-extrabold">Show menu always</span>
+                </motion.button>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showGate && (
